@@ -160,15 +160,21 @@
     {{template "saveBar" (dict "Hint" "Saves apply live. Theme change reloads the page." "FlashID" "save-flash" "Label" "Save settings")}}
   </form>
 
-  {{template "settingsSectionOpen" (dict "Num" "08" "Title" "Account" "Sub" "Change the password used to sign in to this UI." "BodyClass" "")}}
-    <form class="account-form" hx-post="/settings/password" hx-target="#pw-flash" hx-swap="innerHTML">
-      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-      <label>Current password<input type="password" name="current" autocomplete="current-password" required></label>
-      <label>New password<input type="password" name="new" autocomplete="new-password" required minlength="4"></label>
-      <label>Confirm<input type="password" name="confirm" autocomplete="new-password" required minlength="4"></label>
-      {{template "saveBar" (dict "Hint" "You'll stay signed in after changing." "FlashID" "pw-flash" "Label" "Update password")}}
-    </form>
-  {{template "settingsSectionClose" .}}
+  <details class="settings-section settings-section--collapsible">
+    <summary class="settings-section-head">
+      <span class="title"><span class="num">08</span>Account</span>
+      <span class="sub">Change the password used to sign in to this UI.</span>
+    </summary>
+    <div class="settings-section-body">
+      <form class="account-form" hx-post="/settings/password" hx-target="#pw-flash" hx-swap="innerHTML">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <label>Current password<input type="password" name="current" autocomplete="current-password" required></label>
+        <label>New password<input type="password" name="new" autocomplete="new-password" required minlength="4"></label>
+        <label>Confirm<input type="password" name="confirm" autocomplete="new-password" required minlength="4"></label>
+        {{template "saveBar" (dict "Hint" "You'll stay signed in after changing." "FlashID" "pw-flash" "Label" "Update password")}}
+      </form>
+    </div>
+  </details>
 </section>
 <script src="/static/js/settings.js" defer></script>
 {{template "footer" .}}{{end}}

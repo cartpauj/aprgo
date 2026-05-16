@@ -28,7 +28,7 @@
 
 {{define "wizardNav"}}
 <div class="wizard-nav">
-  {{if .HasPrev}}<a href="{{.PrevURL}}" class="btn ghost">← Back</a>{{else}}<span></span>{{end}}
+  {{if .HasPrev}}<a href="{{.PrevURL}}" class="btn ghost">← Back</a>{{end}}
   <button type="submit" class="primary">Next →</button>
 </div>
 {{end}}
@@ -69,7 +69,7 @@
     </label>
   </div>
   <div class="wizard-nav sticky">
-    {{if .HasPrev}}<a href="{{.PrevURL}}" class="btn ghost">← Back</a>{{else}}<span></span>{{end}}
+    {{if .HasPrev}}<a href="{{.PrevURL}}" class="btn ghost">← Back</a>{{end}}
     <button type="submit" class="primary">Next →</button>
   </div>
 </form>
@@ -182,7 +182,7 @@
 {{end}}
 
 {{define "stepAdvancedFlags"}}
-<form class="wizard-form narrow" method="POST" action="/setup/save/advanced-flags">
+<form class="wizard-form wide" method="POST" action="/setup/save/advanced-flags">
   <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
   <p class="hint">You picked <strong>Advanced / Custom</strong> — set each gating and digipeating flag directly. Hover the <span class="info-tip" aria-hidden="true">i</span> bubbles for details.</p>
   <div class="stack-2 flags-grid">

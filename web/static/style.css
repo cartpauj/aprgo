@@ -1013,71 +1013,6 @@ body.view-raw .pkt .info-raw { display: inline; }
 .dir-pill.out { color: var(--tx); }
 .dir-pill.in  { color: var(--accent); }
 
-/* ─── Settings layout (sidebar + content) ─────────────────────────────── */
-.settings-shell {
-  display: grid;
-  grid-template-columns: 240px 1fr;
-  gap: var(--gap-6);
-  align-items: start;
-}
-@media (max-width: 860px) {
-  .settings-shell { grid-template-columns: 1fr; gap: var(--gap-4); }
-}
-
-.settings-sidebar {
-  position: sticky;
-  top: 70px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: var(--gap-3);
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--r-3);
-}
-.settings-sidebar .sidebar-head {
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--muted);
-  padding: 6px 10px 10px;
-  border-bottom: 1px dashed var(--border);
-  margin-bottom: 6px;
-}
-.settings-sidebar a {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  border-radius: var(--r-2);
-  color: var(--muted);
-  font-size: 0.86rem;
-  font-weight: 500;
-  text-decoration: none;
-  letter-spacing: 0.01em;
-}
-.settings-sidebar a:hover { background: var(--panel-overlay); color: var(--fg-strong); text-decoration: none; }
-.settings-sidebar a.active {
-  color: var(--fg-strong);
-  background: var(--panel-overlay);
-  box-shadow: inset 3px 0 0 var(--accent);
-}
-.settings-sidebar a .num {
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  color: var(--muted);
-  width: 18px;
-  display: inline-block;
-}
-
-.settings-content {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap-5);
-  min-width: 0;
-}
-
 /* Settings cards: card-per-section so they breathe */
 .settings-section {
   background: var(--panel);
@@ -1085,6 +1020,36 @@ body.view-raw .pkt .info-raw { display: inline; }
   border-radius: var(--r-3);
   overflow: hidden;
 }
+/* Collapsible variant (<details>) — used for the Account section so it
+   doesn't compete with the main save bar above it. */
+.settings-section--collapsible {
+  margin-top: var(--gap-5);
+}
+.settings-section--collapsible > summary {
+  cursor: pointer;
+  list-style: none;
+  flex-direction: row;
+  align-items: center;
+  position: relative;
+  padding-right: 44px;
+}
+.settings-section--collapsible > summary::-webkit-details-marker { display: none; }
+.settings-section--collapsible > summary::after {
+  content: "▸";
+  position: absolute;
+  right: var(--gap-5);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font-size: 0.9rem;
+  transition: transform 0.12s ease;
+}
+.settings-section--collapsible[open] > summary::after {
+  transform: translateY(-50%) rotate(90deg);
+}
+.settings-section--collapsible > summary .sub { margin-left: auto; }
+.settings-section--collapsible > summary:hover { background: var(--panel); }
+.settings-section--collapsible > summary:hover .title { color: var(--accent); }
 .settings-section-head {
   display: flex;
   flex-direction: column;
@@ -1632,9 +1597,6 @@ body.view-raw .pkt .info-raw { display: inline; }
 
 /* ─── Mode-picker cards (wizard step) ────────────────────────────────── */
 .mode-cards { display: grid; grid-template-columns: 1fr; gap: var(--gap-3); }
-@media (min-width: 640px) {
-  .mode-cards { grid-template-columns: 1fr 1fr; }
-}
 .mode-card {
   position: relative;
   display: grid;
@@ -1762,7 +1724,6 @@ body.view-raw .pkt .info-raw { display: inline; }
 .station-empty { text-align: center; padding: var(--gap-6); }
 
 /* ─── Wizard additions ────────────────────────────────────────────────── */
-.setup { max-width: 760px; margin: 0 auto; }
 .setup .page-head .lede { display: none; }
 .setup-progress {
   display: flex;
@@ -1836,18 +1797,23 @@ body.view-raw .pkt .info-raw { display: inline; }
 }
 
 .wizard-form         { display: flex; flex-direction: column; gap: var(--gap-3); }
-.wizard-form.narrow  { max-width: 480px; }
-.wizard-form.wide    { max-width: 680px; }
-.wizard-form.loc-form { padding-bottom: 80px; }
-.wizard-done         { display: flex; flex-direction: column; gap: var(--gap-3); max-width: 680px; }
+.wizard-form.narrow  { max-width: 720px; }
+.wizard-form.wide    { max-width: none; }
+.wizard-form.loc-form { padding-bottom: 80px; max-width: none; }
+.wizard-done         { display: flex; flex-direction: column; gap: var(--gap-3); max-width: 720px; }
 
+/* Wizard nav: Back anchors left via margin-right:auto, Next sits flush right
+   via justify-content:flex-end. Works whether or not Back is present —
+   no placeholder span needed. */
 .wizard-nav {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
   gap: var(--gap-3);
   flex-wrap: wrap;
 }
+.wizard-nav > a.btn.ghost,
+.wizard-nav > .wizard-back { margin-right: auto; }
 .wizard-nav.justify-end { justify-content: flex-end; }
 .wizard-nav.sticky {
   position: sticky;
@@ -2587,6 +2553,9 @@ html.theme-light .chat-thread, html.theme-auto .chat-thread { background: var(--
   border-radius: var(--r-2);
   padding: var(--gap-3) var(--gap-4);
   font-size: 0.88rem;
+  /* When sitting inside .flags-grid (2-col layout), span both columns so
+     the chips inside still get the full width to flex-wrap across. */
+  grid-column: 1 / -1;
 }
 .mode-managed-note .eyebrow { display: block; margin-bottom: 6px; }
 .mode-managed-note p { margin: 0 0 var(--gap-3); color: var(--muted); }
