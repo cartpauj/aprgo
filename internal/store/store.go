@@ -397,6 +397,34 @@ func (s *Store) LogMessage(m Message) (int64, error) {
 	return r.LastInsertId()
 }
 
+// MergeMessageVia ORs the supplied via_rf / via_is bits onto the most-recent
+// inbound message row matching (source, dest, body). Used by parseLoop when a
+// duplicate of an in-flight message arrives via the *other* transport — e.g.
+// the IS-gated copy from another iGate beats our own RF decode by a few
+// milliseconds, then RF lands and would otherwise be dropped by the message
+// dedupe. Merging the flags is how we record "this message arrived via both
+// RF and IS" in the messages page badges.
+//
+// Matches on body (not msg_id) so that radios that bump the msg_id on each
+// retry still get their via flags merged.
+func (s *Store) MergeMessageVia(source, dest, body string, viaRF, viaIS bool) error {
+	if !viaRF && !viaIS {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`
+        UPDATE messages
+        SET via_rf = via_rf | ?, via_is = via_is | ?
+        WHERE id = (
+            SELECT id FROM messages
+            WHERE direction = 'in' AND source = ? AND dest = ? AND body = ?
+            ORDER BY id DESC LIMIT 1
+        )`,
+		b2i(viaRF), b2i(viaIS), source, dest, body)
+	return err
+}
+
 // SetMessageState updates the retry-state lifecycle of an outgoing message.
 // `attempts` is the current count of send attempts (0 = original send only).
 // Sets the `acked` boolean column in sync with state for the existing UI

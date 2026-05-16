@@ -532,6 +532,14 @@ func (s *Server) parseLoop(ctx context.Context) {
 								ViaIS:     pkt.Frame.Origin == ax25.SrcIS,
 								Raw:       pkt.Frame.TNC2(),
 							})
+						} else {
+							// Same logical message just arrived via the OTHER
+							// transport — IS-gated copy beat our RF decode (or
+							// vice versa). Merge the via flag onto the existing
+							// row so the messages page reflects "heard via both."
+							_ = s.store.MergeMessageVia(source, pkt.Decoded.MsgTo, pkt.Decoded.MsgBody,
+								pkt.Frame.Origin == ax25.SrcRF,
+								pkt.Frame.Origin == ax25.SrcIS)
 						}
 
 						// Auto-ACK: if the message has a msg-id AND was
