@@ -1,0 +1,41 @@
+[Unit]
+Description=aprgo APRS iGate + console
+Documentation=https://github.com/cartpauj/aprgo
+After=network-online.target bluetooth.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# aprgo spawns `rfcomm connect` and bluetoothctl to maintain BT links; both
+# require root. The hardening directives below mitigate elevated privilege.
+User=root
+Group=root
+ExecStart=/usr/local/bin/aprgo -listen 0.0.0.0:14439 -state /var/lib/aprgo/state.json -db /var/lib/aprgo/db.sqlite
+Restart=always
+RestartSec=3
+StartLimitIntervalSec=60
+StartLimitBurst=10
+LimitNOFILE=4096
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/aprgo
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_BLUETOOTH AF_NETLINK
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictNamespaces=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

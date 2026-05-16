@@ -1,0 +1,188 @@
+// Settings page interactions: live-reload after save, beacon row add/remove.
+(function () {
+  // Reload after a successful settings save so any theme/state changes apply.
+  var form = document.querySelector('form[hx-post="/settings/save"]');
+  if (form && window.htmx) {
+    form.addEventListener("htmx:afterRequest", function (e) {
+      if (e.detail.successful) setTimeout(function () { location.reload(); }, 700);
+    });
+  }
+
+  var addBtn = document.getElementById("beacon-add");
+  var countEl = document.getElementById("beacon-count");
+  var beaconList = document.getElementById("beacon-list");
+  if (!beaconList) return;
+
+  // ── Visual symbol picker ────────────────────────────────────────────
+  // Replaces the cryptic dropdown of 2-char codes with rendered icon
+  // swatches. The hidden input.beacon-symbol-value (one per picker) is
+  // what the server reads — selecting a swatch updates it. "Custom"
+  // reveals the adjacent text input; typing 2 chars there sets the value
+  // and renders a preview swatch.
+  //
+  // Sprite math (matches map.js popupIcon): table char '/' = primary (0),
+  // '\\' = alternate (1); anything else = overlay letter on alt table,
+  // with the overlay char rendered on top from sprite 2.
+  var SYMBOL_PRESETS = [
+    {code: "I&",  label: "Tx-iGate"},
+    {code: "R&",  label: "RX-only iGate"},
+    {code: "/&",  label: "Gateway (primary)"},
+    {code: "\\&", label: "Tx-iGate (no overlay)"},
+    {code: "S#",  label: "Digipeater (S overlay)"},
+    {code: "/#",  label: "Digipeater (primary)"},
+    {code: "\\#", label: "Digipeater (alt)"},
+    {code: "/-",  label: "House / QTH"},
+    {code: "/r",  label: "Repeater"},
+  ];
+  function spriteIconHTML(code) {
+    if (!code || code.length < 2) return "";
+    var sprite = code[0] === "/" ? "0" : "1";
+    var idx = code.charCodeAt(1) - 0x21;
+    var x = -((idx % 16) * 24);
+    var y = -(Math.floor(idx / 16) * 24);
+    var base =
+      '<span class="aprs-sym" style="background-image:url(/static/aprs-symbols-24-' +
+      sprite + '.png);background-position:' + x + 'px ' + y + 'px;"></span>';
+    // Overlay letter sprite for non-table-char first byte.
+    if (code[0] !== "/" && code[0] !== "\\") {
+      var oc = code.charCodeAt(0) - 0x21;
+      var ox = -((oc % 16) * 24);
+      var oy = -(Math.floor(oc / 16) * 24);
+      return (
+        '<span class="aprs-sym-wrap">' + base +
+        '<span class="aprs-sym-overlay" style="background-image:url(/static/aprs-symbols-24-2.png);background-position:' +
+        ox + 'px ' + oy + 'px;"></span></span>'
+      );
+    }
+    return base;
+  }
+  function labelFor(code) {
+    for (var i = 0; i < SYMBOL_PRESETS.length; i++) {
+      if (SYMBOL_PRESETS[i].code === code) return SYMBOL_PRESETS[i].label;
+    }
+    return "Custom (" + code + ")";
+  }
+  function renderPicker(picker) {
+    var hidden = picker.querySelector(".beacon-symbol-value");
+    var swatches = picker.querySelector(".beacon-symbol-swatches");
+    var labelEl = picker.querySelector(".beacon-symbol-label");
+    var customIn = picker.querySelector(".beacon-symbol-custom");
+    var current = hidden.value;
+    var isCustom = current === "custom" || !SYMBOL_PRESETS.some(function (p) { return p.code === current; });
+    // Render preset swatches + a custom-toggle tile
+    var html = "";
+    for (var i = 0; i < SYMBOL_PRESETS.length; i++) {
+      var p = SYMBOL_PRESETS[i];
+      var sel = !isCustom && p.code === current ? " is-selected" : "";
+      html +=
+        '<button type="button" class="beacon-symbol-swatch' + sel + '"' +
+        ' data-code="' + p.code.replace(/&/g, "&amp;") + '"' +
+        ' title="' + p.label + '">' + spriteIconHTML(p.code) + '</button>';
+    }
+    var customSel = isCustom ? " is-selected" : "";
+    html +=
+      '<button type="button" class="beacon-symbol-swatch beacon-symbol-swatch-custom' + customSel + '"' +
+      ' data-code="custom" title="Custom">✎</button>';
+    swatches.innerHTML = html;
+    // Label + custom-input visibility
+    if (isCustom) {
+      labelEl.textContent = customIn.value ? labelFor(customIn.value) : "Custom — type 2 chars below";
+      customIn.style.display = "";
+    } else {
+      labelEl.textContent = labelFor(current);
+      customIn.style.display = "none";
+    }
+  }
+  function pickersIn(scope) {
+    return scope.querySelectorAll(".beacon-symbol-picker");
+  }
+  pickersIn(beaconList).forEach(renderPicker);
+
+  // Delegated swatch-click: pick a preset, or toggle "Custom".
+  beaconList.addEventListener("click", function (e) {
+    var btn = e.target.closest(".beacon-symbol-swatch");
+    if (!btn) return;
+    e.preventDefault();
+    var picker = btn.closest(".beacon-symbol-picker");
+    if (!picker) return;
+    var hidden = picker.querySelector(".beacon-symbol-value");
+    var code = btn.getAttribute("data-code");
+    // Decode any &amp; from the data attribute back to & for the value
+    code = code.replace(/&amp;/g, "&");
+    hidden.value = code;
+    if (code === "custom") {
+      var customIn = picker.querySelector(".beacon-symbol-custom");
+      customIn.focus();
+    }
+    renderPicker(picker);
+  });
+
+  // Custom-input → live update the hidden value + label as the operator
+  // types. Only commit when the input is exactly 2 valid chars.
+  beaconList.addEventListener("input", function (e) {
+    if (!e.target.matches(".beacon-symbol-custom")) return;
+    var picker = e.target.closest(".beacon-symbol-picker");
+    if (!picker) return;
+    var v = e.target.value;
+    if (v.length === 2) {
+      picker.querySelector(".beacon-symbol-value").value = v;
+      picker.querySelector(".beacon-symbol-label").textContent = labelFor(v);
+    } else {
+      picker.querySelector(".beacon-symbol-value").value = "custom";
+      picker.querySelector(".beacon-symbol-label").textContent = "Custom — need exactly 2 chars";
+    }
+  });
+
+  // Soft-delete: flip the hidden remove flag so the server drops the row on
+  // save, then visually hide the fieldset. The Go side rebuilds the Beacons
+  // slice from the form, so the row simply won't survive submit.
+  beaconList.addEventListener("click", function (e) {
+    var btn = e.target.closest(".beacon-remove");
+    if (!btn) return;
+    var fs = btn.closest("fieldset.beacon-row");
+    if (!fs) return;
+    var flag = fs.querySelector(".beacon-remove-flag");
+    if (flag) flag.value = "1";
+    fs.style.display = "none";
+  });
+
+  if (!addBtn || !countEl) return;
+  addBtn.addEventListener("click", function () {
+    var i = parseInt(countEl.value, 10) || 0;
+    var fs = document.createElement("fieldset");
+    fs.className = "beacon-row";
+    fs.innerHTML = beaconRowTemplate(i);
+    beaconList.insertBefore(fs, beaconList.lastElementChild);
+    pickersIn(fs).forEach(renderPicker);
+    countEl.value = String(i + 1);
+  });
+
+  // Markup mirrors the server-side rendering for an existing beacon. Keep in
+  // sync with the {{range .BeaconViews}} block in settings.html.
+  function beaconRowTemplate(i) {
+    return (
+      '<legend>Beacon: new</legend>' +
+      '<input type="hidden" name="beacon_' + i + '_name" value="beacon' + i + '">' +
+      '<div class="beacon-row-grid">' +
+        '<label>Symbol' +
+          '<div class="beacon-symbol-picker" data-idx="' + i + '">' +
+            '<input type="hidden" name="beacon_' + i + '_symbol" class="beacon-symbol-value" value="I&amp;">' +
+            '<div class="beacon-symbol-swatches"></div>' +
+            '<div class="beacon-symbol-label"></div>' +
+            '<input type="text" class="beacon-symbol-custom" name="beacon_' + i + '_symbol_custom" placeholder="2 chars (e.g. /j)" maxlength="2" minlength="2" pattern="..">' +
+          '</div>' +
+        '</label>' +
+        '<label>Comment<input type="text" name="beacon_' + i + '_comment" placeholder="aprgo status" maxlength="43"></label>' +
+        '<label>Path<input type="text" name="beacon_' + i + '_path" placeholder="WIDE2-1"></label>' +
+        '<label>Interval (minutes, min 10)<input type="number" name="beacon_' + i + '_every_min" value="30" min="10" max="1440"></label>' +
+        '<label>Callsign override<input type="text" name="beacon_' + i + '_callsign" placeholder="(uses station callsign)" pattern="[A-Za-z0-9-]*"></label>' +
+      '</div>' +
+      '<div class="beacon-row-foot">' +
+        '<label class="cb"><input type="checkbox" name="beacon_' + i + '_enabled" value="1" checked> Enabled</label>' +
+        '<label class="cb"><input type="checkbox" name="beacon_' + i + '_messages" value="1" checked> Messaging-capable</label>' +
+        '<button type="button" class="btn ghost beacon-remove">Remove beacon</button>' +
+        '<input type="hidden" name="beacon_' + i + '_remove" value="0" class="beacon-remove-flag">' +
+      '</div>'
+    );
+  }
+})();

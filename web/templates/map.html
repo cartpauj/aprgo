@@ -1,0 +1,35 @@
+{{define "map.html"}}{{template "header" .}}
+<link rel="stylesheet" href="/static/leaflet.css">
+<script src="/static/leaflet.js" defer></script>
+<script src="/static/aprs-icons.js" defer></script>
+<script src="/static/js/map.js" defer></script>
+<section class="map-page">
+  <div class="map-controls">
+    <h1>Map</h1>
+    <label>Window
+      <select id="window-min">
+        <option value="30">30 min</option>
+        <option value="60" selected>1 hour</option>
+        <option value="180">3 hours</option>
+        <option value="360">6 hours</option>
+        <option value="720">12 hours</option>
+        <option value="1440">1 day</option>
+        <option value="4320">3 days</option>
+      </select>
+    </label>
+    <span id="map-status" class="map-status">initializing…</span>
+    <button type="button" id="focus-pill" class="focus-pill" style="display:none;" aria-label="Show all stations">
+      <span class="focus-pill-label">Viewing</span>
+      <span class="focus-pill-call" id="focus-pill-call"></span>
+      <span class="focus-pill-x" aria-hidden="true">×</span>
+    </button>
+  </div>
+  <div id="map" class="leaflet-map"
+       data-my-lat="{{.St.Lat}}"
+       data-my-lon="{{.St.Lon}}"
+       data-my-call="{{.St.Callsign}}"
+       data-my-symbol="{{.MySymbol}}"
+       data-my-comment="{{.MyComment}}"
+       {{if .FilterKm}}data-filter-lat="{{.FilterLat}}" data-filter-lon="{{.FilterLon}}" data-filter-km="{{.FilterKm}}"{{end}}></div>
+</section>
+{{template "footer" .}}{{end}}

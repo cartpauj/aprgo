@@ -1,0 +1,38 @@
+{{define "dashboard.html"}}{{template "header" .}}
+{{if .Flash}}<div class="flash ok flash-banner">{{.Flash}}</div>{{end}}
+
+<section class="dashboard">
+  {{template "pageHead" (dict
+    "Eyebrow" "Channel · 144.390 MHz"
+    "Title"   "Live RX feed"
+    "Lede"    "Packets arrive top-down as your iGate hears them — RF and APRS-IS interleaved. Click any callsign to open its station detail.")}}
+
+  <div class="console-bar">
+    <div class="console-bar-left">
+      <span class="console-led" id="feed-led" title="Live packet feed. Green = your browser is polling the iGate for fresh packets every 2.5s.">
+        <span class="dot"></span>
+        <span class="led-label">Live feed</span>
+      </span>
+    </div>
+    <div class="console-bar-center">
+      <div class="feed-filter" role="tablist" aria-label="Filter live feed">
+        <button type="button" class="feed-chip is-active" data-filter="all"  role="tab">All</button>
+        <button type="button" class="feed-chip"           data-filter="rf"   role="tab">RF</button>
+        {{if not .St.OfflineMode}}<button type="button" class="feed-chip"           data-filter="is"   role="tab">IS</button>{{end}}
+        <button type="button" class="feed-chip"           data-filter="tx"   role="tab">TX</button>
+      </div>
+    </div>
+    <div class="console-bar-right">
+      <button id="view-mode-btn" class="view-toggle-btn" type="button">Show raw</button>
+    </div>
+  </div>
+
+  <div id="rx-feed" class="rx-feed" data-cursor="{{.FeedCursor}}">
+    {{range .RenderedPackets}}{{.}}{{else}}
+    {{template "emptyFeed" (dict
+      "Title"   "Listening for traffic…"
+      "Tagline" "No packets yet. Your iGate is online and the band is open.")}}
+    {{end}}
+  </div>
+</section>
+{{template "footer" .}}{{end}}

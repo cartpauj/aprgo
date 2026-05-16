@@ -1,0 +1,31 @@
+# Build output
+/aprgo
+/aprgo-*
+/dist/
+/tmp/
+
+# Test artifacts
+*.test
+*.out
+coverage.out
+coverage.html
+
+# Runtime state / databases (never commit operator data)
+/state.json
+state.json
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-*
+
+# Editor / tooling
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log

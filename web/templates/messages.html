@@ -1,0 +1,160 @@
+{{define "messages.html"}}{{template "header" .}}
+<section class="chat-page">
+  {{template "pageHead" (dict
+    "Eyebrow" "Direct messaging"
+    "Title"   "Messages"
+    "Lede"    "Two-pane chat: pick a callsign on the left to read the thread; type below to send. Replies arrive automatically.")}}
+
+  <div class="chat-shell">
+    <aside class="chat-rail" aria-label="Conversations">
+      <form class="chat-newchat" method="GET" action="/messages" autocomplete="off">
+        <label class="chat-newchat-label" for="newchat-input">Start a chat</label>
+        <div class="chat-newchat-row">
+          <input id="newchat-input" name="with" type="text" placeholder="N0CALL-9" required pattern="[A-Za-z0-9-]{3,9}">
+          <button type="submit" class="primary" aria-label="Start chat">→</button>
+        </div>
+      </form>
+
+      <div class="chat-rail-search">
+        <input id="conv-search" type="search" placeholder="Filter conversations…" autocomplete="off" aria-label="Filter conversations">
+      </div>
+
+      {{/* Conversation list — same fragment is also served standalone at
+           /messages/conv-list for HTMX polling. The outer div is the swap
+           target; we re-fetch its innerHTML on the same 5s cadence as the
+           thread pane so a new peer surfaces without a full page reload. */}}
+      <nav class="chat-conv-list" aria-label="Conversations" id="conv-list"
+           hx-get="/messages/conv-list{{if .Peer}}?with={{.Peer}}{{end}}"
+           hx-trigger="msg-sent from:body, every 5s"
+           hx-swap="innerHTML">
+        {{template "msgConvList" .}}
+      </nav>
+    </aside>
+
+    <main class="chat-pane">
+    {{if .Peer}}
+      <header class="chat-pane-head">
+        <div class="chat-pane-who">
+          <div class="eyebrow">Conversation with</div>
+          <h2 class="chat-peer-call">{{.Peer}}</h2>
+        </div>
+        <div class="chat-pane-actions">
+          <a href="/stations/{{.Peer}}" class="btn ghost">Station detail →</a>
+          <a href="https://aprs.fi/info/a/{{.Peer}}" target="_blank" rel="noopener" class="btn ghost">aprs.fi ↗</a>
+        </div>
+      </header>
+
+      <div id="thread-pane" class="chat-thread"
+           hx-get="/messages/thread?with={{.Peer}}"
+           hx-trigger="msg-sent from:body, every 5s"
+           hx-swap="innerHTML">
+        {{template "msgThread" .}}
+      </div>
+
+      <form class="chat-composer"
+            hx-post="/messages/send"
+            hx-target="#composer-flash"
+            hx-swap="innerHTML"
+            hx-on::after-request="if(event.detail.successful){this.querySelector('textarea').value='';this.querySelector('textarea').focus();}">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <input type="hidden" name="source" value="{{.MyCall}}">
+        <input type="hidden" name="dest" value="{{.Peer}}">
+        <div class="chat-composer-row">
+          <textarea name="body" rows="1" maxlength="67" placeholder="Message {{.Peer}}… (max 67 chars)" required></textarea>
+          <button type="submit" class="primary chat-send" aria-label="Send">
+            <span class="chat-send-glyph">↑</span>
+          </button>
+        </div>
+        <div class="chat-composer-foot">
+          <div class="chat-composer-toggles">
+            <label class="cb cb-tiny"><input type="checkbox" name="via_rf" checked> RF</label>
+            <label class="cb cb-tiny"><input type="checkbox" name="via_is"> IS</label>
+          </div>
+          <div id="composer-flash" class="chat-composer-flash"></div>
+          <div class="chat-charcount mono">67 max</div>
+        </div>
+      </form>
+    {{else}}
+      <div class="chat-empty-pane">
+        <div class="chat-empty-mark">
+          <span class="brand-dot"></span>
+        </div>
+        <h2>No conversation selected</h2>
+        <p class="dim">Pick a callsign on the left, or start a new chat with the input at the top of the rail.</p>
+      </div>
+    {{end}}
+    </main>
+  </div>
+</section>
+<script src="/static/js/messages.js" defer></script>
+{{template "footer" .}}{{end}}
+
+{{/* Conversation-list fragment — used both inline and standalone via the
+     polling endpoint. */}}
+{{define "msgConvList"}}
+{{range .Conversations}}
+<a href="/messages?with={{.Peer}}" class="chat-conv {{if eq $.Peer .Peer}}active{{end}}" data-call="{{.Peer}}">
+  <div class="chat-conv-head">
+    <span class="chat-conv-call">{{.Peer}}</span>
+    <time class="chat-conv-time rel-time" data-ts="{{unix .LastTime}}" title="{{.LastTime.Format "2006-01-02 15:04:05"}}"></time>
+  </div>
+  <div class="chat-conv-preview">
+    {{if eq .LastDir "out"}}<span class="chat-conv-arrow out">↗</span>{{else}}<span class="chat-conv-arrow in">↙</span>{{end}}
+    <span class="chat-conv-body">{{.LastBody}}</span>
+  </div>
+</a>
+{{else}}
+<div class="chat-conv-empty">
+  <div class="eyebrow">No conversations yet</div>
+  <div class="dim">Start one above, or wait for someone to message you.</div>
+</div>
+{{end}}
+{{end}}
+
+{{/* Thread fragment — rendered standalone for HTMX polling. */}}
+{{define "msgThread"}}
+{{if .Thread}}
+{{range .Thread}}
+<div class="chat-bubble {{if eq .Direction "out"}}out{{else}}in{{end}}" data-id="{{.ID}}">
+  <div class="chat-bubble-body">{{.Body}}</div>
+  <div class="chat-bubble-meta mono">
+    <time class="rel-time" data-ts="{{unix .Time}}" title="{{.Time.Format "2006-01-02 15:04:05"}}"></time>
+    {{if .ViaRF}}<span class="msg-tag rf">RF</span>{{end}}
+    {{if .ViaIS}}<span class="msg-tag is">IS</span>{{end}}
+    {{if eq .Direction "out"}}
+      {{if eq .State "acked"}}
+        <span class="chat-ack" title="Acked by recipient">✓ acked</span>
+      {{else if eq .State "pending"}}
+        {{if le .Attempts 1}}
+          <span class="chat-pending" title="Initial send · awaiting ack">… awaiting ack</span>
+        {{else}}
+          <span class="chat-pending" title="Retrying — attempt {{.Attempts}} of 5">↻ retry {{.Attempts}}/5</span>
+        {{end}}
+        <button type="button" class="chat-action cancel" title="Cancel retries"
+                hx-post="/messages/cancel/{{.ID}}"
+                hx-headers='{"X-CSRF-Token": "{{$.CSRFToken}}"}'
+                hx-swap="none">× cancel</button>
+      {{else if eq .State "failed"}}
+        <span class="chat-failed" title="No ack after 5 attempts">✗ no ack</span>
+        <button type="button" class="chat-action retry" title="Send again"
+                hx-post="/messages/retry/{{.ID}}"
+                hx-headers='{"X-CSRF-Token": "{{$.CSRFToken}}"}'
+                hx-swap="none">↻ retry</button>
+      {{else if eq .State "cancelled"}}
+        <span class="chat-cancelled" title="Cancelled by you">✗ cancelled</span>
+        <button type="button" class="chat-action retry" title="Send again"
+                hx-post="/messages/retry/{{.ID}}"
+                hx-headers='{"X-CSRF-Token": "{{$.CSRFToken}}"}'
+                hx-swap="none">↻ retry</button>
+      {{end}}
+    {{end}}
+  </div>
+</div>
+{{end}}
+{{else}}
+<div class="chat-thread-empty">
+  <div class="eyebrow">No messages yet</div>
+  <div class="dim">Be the first to write — type below.</div>
+</div>
+{{end}}
+{{end}}

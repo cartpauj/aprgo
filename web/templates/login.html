@@ -1,0 +1,33 @@
+{{define "login.html"}}{{template "header" .}}
+<div class="login-wrap">
+  <div class="login-card login">
+    <div class="login-card-head">
+      <div class="login-mark">
+        <span class="brand-dot"></span>
+        aprgo
+      </div>
+      <div class="login-tagline">iGate · Operator console</div>
+      <div class="login-meta mono">
+        <span>144.390 MHz</span>
+        <span class="login-meta-sep">·</span>
+        <span>1200 baud AX.25</span>
+      </div>
+    </div>
+    <form method="POST" action="/login">
+      <input type="hidden" name="next" value="{{.Next}}">
+      <label>Operator
+        <input name="user" autocomplete="username" autofocus required>
+      </label>
+      <label>Passphrase
+        <input name="pass" type="password" autocomplete="current-password" required>
+      </label>
+      {{if .Error}}<div class="flash err">{{.Error}}</div>{{end}}
+      <button type="submit" class="primary">Authenticate</button>
+    </form>
+    <div class="login-foot mono">
+      <span class="login-foot-led"></span>
+      <span>ready · awaiting auth</span>
+    </div>
+  </div>
+</div>
+{{template "footer" .}}{{end}}

@@ -1,0 +1,174 @@
+{{define "settings.html"}}{{template "header" .}}
+<section class="settings-page">
+  {{template "pageHead" (dict
+    "Eyebrow" "Configuration"
+    "Title"   "Settings"
+    "Lede"    "All of aprgo's configuration in one place.")}}
+
+  {{if and .ISUnverified (not .St.OfflineMode)}}<div class="flash err">
+    ⚠ APRS-IS rejected your passcode for callsign <code>{{.St.Callsign}}</code>. You're connected but every packet we send is being silently dropped (qAX'd) by the server. Generate the correct passcode for your callsign at <a href="https://apps.magicbug.co.uk/passcode/" target="_blank" rel="noopener">apps.magicbug.co.uk/passcode</a>, paste it below, and save.
+  </div>{{end}}
+  {{if and .ISLastError (not .ISConnected) (not .St.OfflineMode)}}<div class="flash err">
+    APRS-IS disconnected. Last error: <code>{{.ISLastError}}</code>
+  </div>{{end}}
+  {{if and .RFLastError (not .RFConnected)}}<div class="flash err">
+    Radio (TNC) disconnected. Last error: <code>{{.RFLastError}}</code>
+  </div>{{end}}
+
+  <form class="settings-form" hx-post="/settings/save" hx-target="#save-flash" hx-swap="innerHTML">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+    {{template "settingsSectionOpen" (dict "Num" "01" "Title" "Identity" "Sub" "Your callsign-SSID and APRS-IS passcode." "BodyClass" "grid-cols-fit")}}
+      <label>Callsign-SSID
+        <input type="text" name="callsign" value="{{.St.Callsign}}" placeholder="N0CALL-10" required>
+      </label>
+      <label><span class="label-head">APRS-IS passcode
+        <span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Numeric, callsign-specific. Use <code>-1</code> for RX-only. <a href="https://apps.magicbug.co.uk/passcode/" target="_blank" rel="noopener">Generate one</a>.</span></span></span>
+        <input type="text" name="passcode" value="{{.St.Passcode}}" placeholder="numeric or -1 for RX-only">
+      </label>
+    {{template "settingsSectionClose" .}}
+
+    {{template "settingsSectionOpen" (dict "Num" "02" "Title" "Position & mode" "Sub" "Where your station is and how it behaves on the air.")}}
+      <div class="inline-fields">
+        <div class="dim mono-num">{{if or .St.Lat .St.Lon}}{{printf "%.5f, %.5f" .St.Lat .St.Lon}}{{else}}not set{{end}}</div>
+        <a href="/setup/location" class="btn ghost">Change location…</a>
+        <span class="dim">·</span>
+        <div class="dim">Mode: <span class="mono">{{if .St.Mode}}{{.St.Mode}}{{else}}unset{{end}}</span></div>
+        <a href="/setup/mode" class="btn ghost">Switch mode…</a>
+      </div>
+    {{template "settingsSectionClose" .}}
+
+    {{template "settingsSectionOpen" (dict "Num" "03" "Title" "Gating + Digipeating" "Sub" "What aprgo does between RF and APRS-IS." "BodyClass" "stack-2 flags-grid")}}
+    {{if eq (printf "%s" .St.Mode) "advanced"}}
+      <label class="cb"><input type="checkbox" name="tx_enable" value="1" {{if .St.TXEnable}}checked{{end}}> Master TX enable<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Let aprgo transmit over RF. Off = receive-only regardless of other flags.</span></span></label>
+      <label class="cb"><input type="checkbox" name="gate_rf_to_is" value="1" {{if .St.GateRFtoIS}}checked{{end}}> Gate RF → APRS-IS<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Acts as an iGate: forward RF-heard packets to the internet.</span></span></label>
+      <label class="cb"><input type="checkbox" name="gate_is_to_rf" value="1" {{if .St.GateIStoRF}}checked{{end}}> Gate APRS-IS → RF<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Relay APRS-IS messages over RF for stations you've recently heard on air.</span></span></label>
+      <label class="cb"><input type="checkbox" name="digipeat_wide1" value="1" {{if .St.DigipeatWIDE1}}checked{{end}}> Fill-in digipeater<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Handle <code>WIDE1-1</code>. Safe for home iGates.</span></span></label>
+      <label class="cb"><input type="checkbox" name="digipeat_wide2" value="1" {{if .St.DigipeatWIDE2}}checked{{end}}> Full digipeater<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Handle <code>WIDE2-N</code> with decrement. Only enable from a high-elevation site.</span></span></label>
+      <label class="cb"><input type="checkbox" name="viscous_delay" value="1" {{if .St.ViscousDelay}}checked{{end}}> Viscous delay<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Hold <code>WIDE1-1</code> retransmits 3–5 s and cancel if a higher digi handled it first. Standard fill-in politeness — leave on unless you have a reason.</span></span></label>
+      <label class="cb"><input type="checkbox" name="offline_mode" value="1" {{if .St.OfflineMode}}checked{{end}}> Offline mode<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Skip APRS-IS entirely. Off-grid digi setups.</span></span></label>
+      <label class="cb"><input type="checkbox" name="messaging_only_mode" value="1" {{if .St.MessagingOnlyMode}}checked{{end}}> Messaging-only<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Gate only messages and acks RF↔IS. Skip beacons, weather, telemetry.</span></span></label>
+    {{else}}
+      <div class="mode-managed-note">
+        <div class="eyebrow">Managed by mode</div>
+        <p>Set automatically by mode <code>{{.St.Mode}}</code>. <a href="/setup/mode">Switch to Advanced</a> to edit.</p>
+        <div class="mode-flag-chips">
+          <span class="flag-chip {{if .St.TXEnable}}on{{end}}">TX enable</span>
+          <span class="flag-chip {{if .St.GateRFtoIS}}on{{end}}">Gate RF → IS</span>
+          <span class="flag-chip {{if .St.GateIStoRF}}on{{end}}">Gate IS → RF</span>
+          <span class="flag-chip {{if .St.DigipeatWIDE1}}on{{end}}">Digi WIDE1-1</span>
+          <span class="flag-chip {{if .St.DigipeatWIDE2}}on{{end}}">Digi WIDE2-N</span>
+          <span class="flag-chip {{if .St.ViscousDelay}}on{{end}}">Viscous delay</span>
+          <span class="flag-chip {{if .St.OfflineMode}}on{{end}}">Offline</span>
+          <span class="flag-chip {{if .St.MessagingOnlyMode}}on{{end}}">Messaging-only</span>
+        </div>
+      </div>
+    {{end}}
+    {{template "settingsSectionClose" .}}
+
+    {{template "settingsSectionOpen" (dict "Num" "04" "Title" "TNC" "Sub" "The radio interface aprgo will talk to.")}}
+      <div class="inline-fields">
+        <div class="dim mono-num">
+          {{if eq (printf "%s" .St.TNCKind) "serial"}}Serial: <code>{{.St.TNCSerial}}</code>{{else if eq (printf "%s" .St.TNCKind) "tcp"}}TCP: <code>{{.St.TNCAddr}}</code>{{else}}none configured{{end}}
+        </div>
+        <a href="/setup/tnc" class="btn ghost">Change TNC…</a>
+        <span class="dim">·</span>
+        {{if .RFConnected}}<span class="status-ok">● live</span>{{else}}<span class="dim">○ not connected</span>{{end}}
+      </div>
+    {{template "settingsSectionClose" .}}
+
+    {{template "settingsSectionOpen" (dict "Num" "05" "Title" "APRS-IS" "Sub" "The internet leg. The filter scopes what you receive." "BodyClass" "grid-cols-fit-wide")}}
+    {{if .St.OfflineMode}}
+      <div class="mode-managed-note">
+        <div class="eyebrow">Disabled in Offline mode</div>
+        <p>APRS-IS is not used. <a href="/setup/mode">Switch mode…</a> to re-enable.</p>
+      </div>
+    {{else}}
+      <label>Server
+        <input type="text" name="is_server" value="{{.St.ISServer}}" placeholder="noam.aprs2.net:14580">
+      </label>
+      <label><span class="label-head">Filter<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop"><code>r/LAT/LON/KM</code> = radius scope. Empty = full firehose (you don't want this).</span></span></span>
+        <input type="text" name="is_filter" value="{{.St.ISFilter}}" placeholder="r/LAT/LON/150">
+      </label>
+      <div class="status-block">
+        <span class="eyebrow">Status</span>
+        {{if .ISConnected}}<span class="status-ok">● connected</span>{{else}}<span class="dim">○ disconnected</span>{{end}}
+      </div>
+    {{end}}
+    {{template "settingsSectionClose" .}}
+
+    {{template "settingsSectionOpen" (dict "Num" "06" "Title" "Beacons" "Sub" "Periodic transmissions announcing your station." "BodyClass" "beacons-body")}}
+      <div id="beacon-list" class="beacon-list">
+      {{range .BeaconViews}}
+      <fieldset class="beacon-row">
+        <legend>Beacon: {{.B.Name}}</legend>
+        <div class="beacon-last-fired">{{$lf := index $.BeaconLastFired .B.Name}}{{if and $lf (not $lf.IsZero)}}Last fired: {{ago $lf}} ago{{else}}Hasn't fired since startup{{end}}</div>
+        <input type="hidden" name="beacon_{{.Idx}}_name" value="{{.B.Name}}">
+        <div class="beacon-row-grid">
+          <label><span class="label-head">Symbol<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Icon shown on aprs.fi and radios. First char = symbol table or overlay; second char = symbol code. <a href="http://www.aprs.org/symbols.html" target="_blank" rel="noopener">Full reference</a>.</span></span></span>
+            <div class="beacon-symbol-picker" data-idx="{{.Idx}}">
+              <input type="hidden" name="beacon_{{.Idx}}_symbol" class="beacon-symbol-value" value="{{if oneOf .B.Symbol "I&" "R&" "/&" "\\&" "S#" "/#" "\\#" "/-" "/r"}}{{.B.Symbol}}{{else}}custom{{end}}">
+              <div class="beacon-symbol-swatches"></div>
+              <div class="beacon-symbol-label"></div>
+              <input type="text" class="beacon-symbol-custom" name="beacon_{{.Idx}}_symbol_custom"
+                     value="{{if not (oneOf .B.Symbol "I&" "R&" "/&" "\\&" "S#" "/#" "\\#" "/-" "/r")}}{{.B.Symbol}}{{end}}"
+                     placeholder="2 chars (e.g. /j)" maxlength="2" minlength="2" pattern="..">
+            </div>
+          </label>
+          <label><span class="label-head">Comment<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Free text shown next to your station on receivers. Max 43 chars per APRS spec.</span></span></span>
+            <input type="text" name="beacon_{{.Idx}}_comment" value="{{.B.Comment}}" placeholder="aprgo Fill-in iGate" maxlength="43">
+          </label>
+          <label>Path
+            <input type="text" name="beacon_{{.Idx}}_path" value="{{.PathStr}}" placeholder="WIDE1-1">
+          </label>
+          <label><span class="label-head">Interval (min)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Minutes between beacons. Minimum 10 — be polite to the channel.</span></span></span>
+            <input type="number" name="beacon_{{.Idx}}_every_min" value="{{div .B.EveryS 60}}" min="10" max="1440">
+          </label>
+          <label><span class="label-head">Callsign override<span class="info-tip tip-right" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Empty = use station callsign. Set only to run a beacon under a different SSID — e.g. iGate <code>N0CALL-10</code> with weather beacon <code>N0CALL-1</code>. SSID 0–15.</span></span></span>
+            <input type="text" name="beacon_{{.Idx}}_callsign" value="{{.B.Callsign}}" placeholder="(uses station callsign)" pattern="[A-Za-z0-9-]*">
+          </label>
+        </div>
+        <div class="beacon-row-foot">
+          <label class="cb"><input type="checkbox" name="beacon_{{.Idx}}_enabled" value="1" {{if .B.Enabled}}checked{{end}}> Enabled</label>
+          <label class="cb"><input type="checkbox" name="beacon_{{.Idx}}_messages" value="1" {{if .B.Messages}}checked{{end}}> Messaging-capable<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Uses <code>=</code> instead of <code>!</code> so other stations know they can message this beacon.</span></span></label>
+          <button type="button" class="btn ghost beacon-remove">Remove beacon</button>
+          <input type="hidden" name="beacon_{{.Idx}}_remove" value="0" class="beacon-remove-flag">
+        </div>
+      </fieldset>
+      {{end}}
+      <input type="hidden" name="beacon_count" id="beacon-count" value="{{len .BeaconViews}}">
+      </div>
+      <div class="beacon-add-row">
+        <button type="button" class="btn ghost" id="beacon-add">+ Add beacon</button>
+        <span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Typical: one position beacon at 10–30 min. Add a second for status, weather, or a different path. Disabled or empty rows are dropped on save.</span></span>
+      </div>
+    {{template "settingsSectionClose" .}}
+
+    {{template "settingsSectionOpen" (dict "Num" "07" "Title" "UI" "BodyClass" "grid-cols-fit")}}
+      <label>Theme
+        <select name="theme">
+          <option value="auto"  {{if eq .St.Theme "auto"}}selected{{end}}>Auto (follow system)</option>
+          <option value="light" {{if eq .St.Theme "light"}}selected{{end}}>Light</option>
+          <option value="dark"  {{if eq .St.Theme "dark"}}selected{{end}}>Dark</option>
+        </select>
+      </label>
+      <label>Data retention (days, 0 = forever)
+        <input type="number" name="retention_days" value="{{.St.RetentionDays}}" min="0" max="3650">
+      </label>
+    {{template "settingsSectionClose" .}}
+
+    {{template "saveBar" (dict "Hint" "Saves apply live. Theme change reloads the page." "FlashID" "save-flash" "Label" "Save settings")}}
+  </form>
+
+  {{template "settingsSectionOpen" (dict "Num" "08" "Title" "Account" "Sub" "Change the password used to sign in to this UI." "BodyClass" "")}}
+    <form class="account-form" hx-post="/settings/password" hx-target="#pw-flash" hx-swap="innerHTML">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <label>Current password<input type="password" name="current" autocomplete="current-password" required></label>
+      <label>New password<input type="password" name="new" autocomplete="new-password" required minlength="4"></label>
+      <label>Confirm<input type="password" name="confirm" autocomplete="new-password" required minlength="4"></label>
+      {{template "saveBar" (dict "Hint" "You'll stay signed in after changing." "FlashID" "pw-flash" "Label" "Update password")}}
+    </form>
+  {{template "settingsSectionClose" .}}
+</section>
+<script src="/static/js/settings.js" defer></script>
+{{template "footer" .}}{{end}}

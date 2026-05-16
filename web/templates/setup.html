@@ -1,0 +1,241 @@
+{{define "setup.html"}}{{template "header" .}}
+<section class="setup">
+  {{template "pageHead" (dict
+    "Eyebrow" .WizardLabel
+    "Title"   .StepTitle
+    "Lede"    .StepHelp)}}
+
+  <nav class="setup-progress" aria-label="progress">
+    {{range $i, $s := .Steps}}<span class="setup-step {{if eq $.StepIdx $i}}active{{else if lt $i $.StepIdx}}done{{end}}"><span class="setup-step-num">{{add $i 1}}</span><span class="setup-step-label">{{$s}}</span></span>{{end}}
+  </nav>
+
+  <article class="settings-section">
+    <div class="settings-section-body">
+      {{if .StepErr}}<div class="flash err">{{.StepErr}}</div>{{end}}
+      {{if .PairAddr}}{{template "stepPairing" .}}
+      {{else if eq .StepKey "identity"}}{{template "stepIdentity" .}}
+      {{else if eq .StepKey "location"}}{{template "stepLocation" .}}
+      {{else if eq .StepKey "tnc"}}{{template "stepTNC" .}}
+      {{else if eq .StepKey "mode"}}{{template "stepMode" .}}
+      {{else if eq .StepKey "advanced-flags"}}{{template "stepAdvancedFlags" .}}
+      {{else if eq .StepKey "beacon"}}{{template "stepBeacon" .}}
+      {{else if eq .StepKey "done"}}{{template "stepDone" .}}
+      {{end}}
+    </div>
+  </article>
+</section>
+{{template "footer" .}}{{end}}
+
+{{define "wizardNav"}}
+<div class="wizard-nav">
+  {{if .HasPrev}}<a href="{{.PrevURL}}" class="btn ghost">← Back</a>{{else}}<span></span>{{end}}
+  <button type="submit" class="primary">Next →</button>
+</div>
+{{end}}
+
+{{define "stepIdentity"}}
+<form class="wizard-form narrow" method="POST" action="/setup/save/identity">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <label>Callsign-SSID
+    <input type="text" name="callsign" value="{{.St.Callsign}}" placeholder="N0CALL-10" required autofocus>
+    <div class="hint">Your FCC-issued callsign + SSID (10 is conventional for iGates).</div>
+  </label>
+  <label>APRS-IS passcode
+    <input type="text" name="passcode" value="{{.St.Passcode}}" placeholder="numeric — or -1 for RX-only">
+    <div class="hint">Get yours at <a href="https://apps.magicbug.co.uk/passcode/" target="_blank" rel="noopener">apps.magicbug.co.uk/passcode</a>. Use -1 to listen without ever transmitting to IS.</div>
+  </label>
+  <div class="wizard-nav justify-end">
+    <button type="submit" class="primary">Next →</button>
+  </div>
+</form>
+{{end}}
+
+{{define "stepLocation"}}
+<link rel="stylesheet" href="/static/leaflet.css">
+<script src="/static/leaflet.js"></script>
+<form class="wizard-form wide loc-form" method="POST" action="/setup/save/location" id="loc-form">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p class="hint">Click the map to drop a pin where your station lives, or type coordinates directly. Used for map display and to seed the APRS-IS filter radius.</p>
+  <div id="setup-map" class="setup-map"></div>
+  <div class="grid-cols-3">
+    <label>Latitude (°)
+      <input type="number" id="lat-in" name="lat" value="{{if .St.Lat}}{{.St.Lat}}{{end}}" step="0.000001" min="-90" max="90" placeholder="click map or type">
+    </label>
+    <label>Longitude (°)
+      <input type="number" id="lon-in" name="lon" value="{{if .St.Lon}}{{.St.Lon}}{{end}}" step="0.000001" min="-180" max="180" placeholder="click map or type">
+    </label>
+    <label>Filter radius (km)
+      <input type="number" name="filter_radius" value="{{.FilterRadiusKm}}" min="10" max="1000">
+    </label>
+  </div>
+  <div class="wizard-nav sticky">
+    {{if .HasPrev}}<a href="{{.PrevURL}}" class="btn ghost">← Back</a>{{else}}<span></span>{{end}}
+    <button type="submit" class="primary">Next →</button>
+  </div>
+</form>
+<script src="/static/js/wizard-location.js"></script>
+{{end}}
+
+{{define "stepTNC"}}
+<form class="wizard-form" method="POST" action="/setup/save/tnc">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p class="hint">Pick where aprgo should read packets from. You can change this anytime.</p>
+
+  <fieldset class="tnc-picker">
+    <legend>Detected serial devices</legend>
+    {{if .Serials}}<div class="stack-2">
+      {{range .Serials}}<label class="cb"><input type="radio" name="kind_path" value="serial::{{.Path}}" {{if and (eq (printf "%s" $.St.TNCKind) "serial") (eq $.St.TNCSerial .Path)}}checked{{end}}> <code>{{.Path}}</code> <span class="dim">— {{.Label}}</span></label>{{end}}
+    </div>{{else}}<div class="dim">No serial devices found. Plug your TNC in and refresh, or use one of the options below.</div>{{end}}
+  </fieldset>
+
+  <fieldset class="tnc-picker">
+    <legend>Bluetooth</legend>
+    {{if .BTPaired}}<div class="stack-2 bt-paired-list">
+      {{range .BTPaired}}<label class="cb"><input type="radio" name="kind_path" value="bt::{{.Address}}"> <span class="eyebrow">Classic</span> <code>{{.Address}}</code> <span class="dim">— {{.Name}}</span></label>{{end}}
+    </div>
+    <div class="tnc-scan-row">
+      <button type="button" class="btn ghost" hx-post="/setup/tnc/scan" hx-target="#bt-scan-result" hx-swap="innerHTML" hx-headers='{"X-CSRF-Token": "{{.CSRFToken}}"}' hx-indicator="#bt-scan-spin">Scan for new devices…</button>
+      <span id="bt-scan-spin" class="htmx-indicator dim hint-tag">scanning ~8s…</span>
+    </div>
+    {{else}}
+    <div class="bt-empty">
+      <div class="bt-empty-icon" aria-hidden="true"></div>
+      <div class="bt-empty-body">
+        <div class="bt-empty-title">No paired Bluetooth TNCs</div>
+        <p class="hint">Put your TNC into pairing/discoverable mode (usually a slow-blinking blue LED), then click <strong>Scan</strong> below. Found devices will pair automatically when you pick one.</p>
+        <button type="button" class="primary" hx-post="/setup/tnc/scan" hx-target="#bt-scan-result" hx-swap="innerHTML" hx-headers='{"X-CSRF-Token": "{{.CSRFToken}}"}' hx-indicator="#bt-scan-spin">📡 Scan for nearby TNCs</button>
+        <span id="bt-scan-spin" class="htmx-indicator dim hint-tag">scanning ~8s — keep the TNC powered and discoverable…</span>
+      </div>
+    </div>
+    {{end}}
+    <div id="bt-scan-result" class="scan-result"></div>
+  </fieldset>
+
+  <fieldset class="tnc-picker">
+    <legend>Network (TCP KISS)</legend>
+    <label class="cb"><input type="radio" name="kind_path" value="tcp::custom" {{if eq (printf "%s" $.St.TNCKind) "tcp"}}checked{{end}}> Connect to a KISS server (Direwolf, tnc-server, WiFi TNC)
+      <input class="inline-after" type="text" name="tcp_addr" value="{{$.St.TNCAddr}}" placeholder="localhost:8001">
+    </label>
+  </fieldset>
+
+  {{template "wizardNav" .}}
+</form>
+{{end}}
+
+{{define "stepMode"}}
+<form class="wizard-form wide" method="POST" action="/setup/save/mode">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p class="hint">Pick the role this station should play. Each option sets sensible defaults; fine-tune later in Settings.</p>
+  <div class="mode-cards">
+    <label class="mode-card">
+      <input type="radio" name="mode" value="rx-only" {{if eq (printf "%s" .St.Mode) "rx-only"}}checked{{end}}>
+      <span>
+        <span class="mc-title">RX-only iGate <span class="mc-pill">Safest</span></span>
+        <span class="mc-desc">Listen on RF, forward to APRS-IS. Never transmits. Good first run while you confirm your TNC and antenna work.</span>
+      </span>
+    </label>
+    <label class="mode-card">
+      <input type="radio" name="mode" value="tx-igate" {{if eq (printf "%s" .St.Mode) "tx-igate"}}checked{{end}}>
+      <span>
+        <span class="mc-title">TX iGate</span>
+        <span class="mc-desc">Gate RF → IS and optionally relay APRS messages from IS down to nearby stations. No digipeating.</span>
+      </span>
+    </label>
+    <label class="mode-card">
+      <input type="radio" name="mode" value="fillin-igate" {{if eq (printf "%s" .St.Mode) "fillin-igate"}}checked{{end}}>
+      <span>
+        <span class="mc-title">Fill-in digi + iGate <span class="mc-pill">Recommended</span></span>
+        <span class="mc-desc">Repeat <code>WIDE1-1</code> only (fills coverage holes) and gate to IS. The right choice for almost every home iGate.</span>
+      </span>
+    </label>
+    <label class="mode-card">
+      <input type="radio" name="mode" value="digi" {{if eq (printf "%s" .St.Mode) "digi"}}checked{{end}}>
+      <span>
+        <span class="mc-title">Full digipeater <span class="mc-pill warn">Mountaintop only</span></span>
+        <span class="mc-desc">Repeats both <code>WIDE1-1</code> and <code>WIDE2-N</code> (with N-decrement up to N=2; higher requests dropped as spam). At low elevation a full digi clogs the network — only enable from a high site, and confirm your license authorizes RF on your regional APRS frequency.</span>
+      </span>
+    </label>
+    <label class="mode-card">
+      <input type="radio" name="mode" value="messaging" {{if eq (printf "%s" .St.Mode) "messaging"}}checked{{end}}>
+      <span>
+        <span class="mc-title">Messaging-only iGate</span>
+        <span class="mc-desc">Bridges person-to-person APRS messages between RF and the internet. Doesn't relay position beacons, weather, or telemetry — lowest TX duty cycle. Right pick in dense areas where iGates already exist and you don't want to add channel noise.</span>
+      </span>
+    </label>
+    <label class="mode-card">
+      <input type="radio" name="mode" value="offline" {{if eq (printf "%s" .St.Mode) "offline"}}checked{{end}}>
+      <span>
+        <span class="mc-title">Off-grid digipeater <span class="mc-pill">No internet</span></span>
+        <span class="mc-desc">Pure RF relay — no APRS-IS at all. Beacons still TX, <code>WIDE1-1</code> + <code>WIDE2-N</code> still decrement. For mountaintop sites without uplink, EMCOMM field-day deployments, any standalone digi.</span>
+      </span>
+    </label>
+    <label class="mode-card">
+      <input type="radio" name="mode" value="advanced" {{if eq (printf "%s" .St.Mode) "advanced"}}checked{{end}}>
+      <span>
+        <span class="mc-title">Advanced / Custom</span>
+        <span class="mc-desc">Skip the presets — manage each gating + digipeating flag individually on the Settings page. Picks no defaults; whatever flags are set now stay set. Choose this if you know exactly what you want.</span>
+      </span>
+    </label>
+  </div>
+  {{template "wizardNav" .}}
+</form>
+{{end}}
+
+{{define "stepAdvancedFlags"}}
+<form class="wizard-form narrow" method="POST" action="/setup/save/advanced-flags">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p class="hint">You picked <strong>Advanced / Custom</strong> — set each gating and digipeating flag directly. Hover the <span class="info-tip" aria-hidden="true">i</span> bubbles for details.</p>
+  <div class="stack-2 flags-grid">
+    <label class="cb"><input type="checkbox" name="tx_enable" value="1" {{if .St.TXEnable}}checked{{end}}> Master TX enable<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Let aprgo transmit over RF. Off = receive-only regardless of other flags.</span></span></label>
+    <label class="cb"><input type="checkbox" name="gate_rf_to_is" value="1" {{if .St.GateRFtoIS}}checked{{end}}> Gate RF → APRS-IS<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Acts as an iGate: forward RF-heard packets to the internet.</span></span></label>
+    <label class="cb"><input type="checkbox" name="gate_is_to_rf" value="1" {{if .St.GateIStoRF}}checked{{end}}> Gate APRS-IS → RF<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Relay APRS-IS messages over RF for stations you've recently heard on air.</span></span></label>
+    <label class="cb"><input type="checkbox" name="digipeat_wide1" value="1" {{if .St.DigipeatWIDE1}}checked{{end}}> Fill-in digipeater<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Handle <code>WIDE1-1</code>. Safe for home iGates.</span></span></label>
+    <label class="cb"><input type="checkbox" name="digipeat_wide2" value="1" {{if .St.DigipeatWIDE2}}checked{{end}}> Full digipeater<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Handle <code>WIDE2-N</code> with decrement. Only enable from a high-elevation site.</span></span></label>
+    <label class="cb"><input type="checkbox" name="viscous_delay" value="1" {{if .St.ViscousDelay}}checked{{end}}> Viscous delay<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Hold <code>WIDE1-1</code> retransmits 3–5 s and cancel if a higher digi handled it first. Standard fill-in politeness.</span></span></label>
+    <label class="cb"><input type="checkbox" name="offline_mode" value="1" {{if .St.OfflineMode}}checked{{end}}> Offline mode<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Skip APRS-IS entirely. Off-grid digi setups.</span></span></label>
+    <label class="cb"><input type="checkbox" name="messaging_only_mode" value="1" {{if .St.MessagingOnlyMode}}checked{{end}}> Messaging-only<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Gate only messages and acks RF↔IS. Skip beacons, weather, telemetry.</span></span></label>
+  </div>
+  {{template "wizardNav" .}}
+</form>
+{{end}}
+
+{{define "stepBeacon"}}
+<form class="wizard-form narrow" method="POST" action="/setup/save/beacon">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p class="hint">Your beacon goes out periodically so other operators see your station on aprs.fi and on their radios. Your position comes from the previous step; you can edit the comment if you'd like something different from the default.</p>
+  <label>Comment (shown next to your icon)
+    <input type="text" name="beacon_comment" value="{{.BeaconCommentDefault}}" maxlength="43">
+    <div class="hint">Up to 43 chars. Common: "{operator name} {QTH}" or just describe the station. Position type and symbol are picked automatically based on your operating mode ({{.ModeSummary}}).</div>
+  </label>
+  <label>Interval (minutes)
+    <input type="number" name="beacon_every_min" value="10" min="10" max="60">
+    <div class="hint">Minimum 10 (APRS community floor for fixed stations). Most home iGates run 10–30 min.</div>
+  </label>
+  {{template "wizardNav" .}}
+</form>
+{{end}}
+
+{{define "stepDone"}}
+<div class="wizard-done">
+  <p class="lede">Setup complete. aprgo is now running with these settings:</p>
+  <dl class="popup-facts">
+    <dt>Callsign</dt><dd><code>{{.St.Callsign}}</code></dd>
+    <dt>Position</dt><dd>{{printf "%.5f, %.5f" .St.Lat .St.Lon}}</dd>
+    <dt>TNC</dt><dd>{{if eq (printf "%s" .St.TNCKind) "serial"}}<code>{{.St.TNCSerial}}</code>{{else if eq (printf "%s" .St.TNCKind) "tcp"}}TCP <code>{{.St.TNCAddr}}</code>{{else}}none{{end}}</dd>
+    <dt>Mode</dt><dd>{{.St.Mode}}</dd>
+    <dt>APRS-IS filter</dt><dd><code>{{.St.ISFilter}}</code></dd>
+  </dl>
+  <div class="wizard-nav justify-end">
+    <a href="/" class="primary">Go to dashboard →</a>
+  </div>
+</div>
+{{end}}
+
+{{define "stepPairing"}}
+<div class="pairing-step">
+  <div id="pair-progress" hx-get="/setup/tnc/pair-status" hx-trigger="load delay:500ms, every 1s" hx-swap="outerHTML">
+    <div class="pairing-line"><span class="pairing-dot"></span> Pairing with <code>{{.PairAddr}}</code>…</div>
+  </div>
+  <div class="hint">Classic Bluetooth pairing typically takes 20–30 seconds. Make sure the TNC is powered on and in range.</div>
+</div>
+{{end}}

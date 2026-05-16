@@ -1,0 +1,69 @@
+{{/* ─────────────────────────────────────────────────────────────────────
+     Reusable template partials.
+     Invoke with: {{template "name" (dict "key" value ...)}} or pass `.`
+     ───────────────────────────────────────────────────────────────────── */}}
+
+{{define "pageHead"}}
+<div class="page-head">
+  <div>
+    {{if .Eyebrow}}<div class="section-label">{{.Eyebrow}}</div>{{end}}
+    <h1>{{.Title}}</h1>
+    {{if .Lede}}<p class="lede">{{.Lede}}</p>{{end}}
+  </div>
+  {{if .Actions}}<div class="page-head-actions">{{.Actions}}</div>{{end}}
+</div>
+{{end}}
+
+{{/* Live-feed console bar — used by dashboard and station detail. */}}
+{{define "consoleBar"}}
+<div class="console-bar">
+  <div class="console-bar-left">
+    {{if .ShowLED}}<span class="console-led" id="feed-led" title="Live packet feed. When this LED is green, your browser is polling the iGate for fresh packets.">
+      <span class="dot"></span>
+      <span class="led-label">Live feed</span>
+    </span>{{end}}
+    {{if .LeftEyebrow}}<span class="eyebrow">{{.LeftEyebrow}}</span>{{end}}
+    {{if .LeftMeta}}<span class="dim mono-num">{{.LeftMeta}}</span>{{end}}
+  </div>
+  <div class="console-bar-right">
+    <button id="view-mode-btn" class="view-toggle-btn" type="button">Show raw</button>
+  </div>
+</div>
+{{end}}
+
+{{/* Empty state for the live feed — animated scanner ring. */}}
+{{define "emptyFeed"}}
+<div class="empty">
+  <div class="scanner"></div>
+  <div>{{.Title}}</div>
+  {{if .Tagline}}<div class="empty-tagline">{{.Tagline}}</div>{{end}}
+</div>
+{{end}}
+
+{{/* Section card for the Settings page. Body is the surrounding template's
+     responsibility (rendered between {{template "settingsSectionOpen" ...}}
+     and {{template "settingsSectionClose" .}}). */}}
+{{define "settingsSectionOpen"}}
+<article class="settings-section">
+  <div class="settings-section-head">
+    <span class="title"><span class="num">{{.Num}}</span>{{.Title}}</span>
+    {{if .Sub}}<span class="sub">{{.Sub}}</span>{{end}}
+  </div>
+  <div class="settings-section-body{{if .BodyClass}} {{.BodyClass}}{{end}}">
+{{end}}
+
+{{define "settingsSectionClose"}}
+  </div>
+</article>
+{{end}}
+
+{{/* Sticky save bar with hint + actions. Caller embeds the submit button. */}}
+{{define "saveBar"}}
+<div class="save-bar">
+  <span class="save-hint">{{.Hint}}</span>
+  <div class="save-actions">
+    <div id="{{.FlashID}}"></div>
+    <button type="submit" class="primary">{{.Label}}</button>
+  </div>
+</div>
+{{end}}

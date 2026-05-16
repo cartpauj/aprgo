@@ -1,0 +1,16 @@
+Source: aprgo
+Section: hamradio
+Priority: optional
+Maintainer: cartpauj <cartpauj@caseproof.com>
+Build-Depends: debhelper-compat (= 13), golang-1.22
+Standards-Version: 4.6.0
+
+Package: aprgo
+Architecture: amd64 arm64
+Depends: ${shlibs:Depends}, ${misc:Depends}, bluez, bluez-tools, adduser
+Recommends: direwolf
+Description: Self-contained APRS iGate, digipeater, and operator console
+ aprgo is a single Go binary that owns the radio TNC (serial, Bluetooth, or
+ TCP KISS), talks to APRS-IS, makes gating decisions, runs beacons, and serves
+ a web console with interactive setup wizards. It replaces the aprx daemon
+ plus a separate web UI with one process and one config file.

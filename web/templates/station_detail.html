@@ -1,0 +1,117 @@
+{{define "station_detail.html"}}{{template "header" .}}
+<section>
+  <div class="station-hero {{if .IsSelf}}is-self{{end}}">
+    <div class="who">
+      <div class="eyebrow">{{if .IsSelf}}This station · your iGate{{else}}Callsign · station detail{{end}}</div>
+      <h1 class="callsign">{{.Callsign}}{{if .IsSelf}}<span class="self-badge">YOU</span>{{end}}</h1>
+      <div class="station-links">
+        <a href="/stations">← All stations</a>
+        <span class="sep">·</span>
+        <a href="https://aprs.fi/info/a/{{.Callsign}}" target="_blank" rel="noopener">View on aprs.fi ↗</a>
+        {{if .IsSelf}}<span class="sep">·</span>
+        <a href="/settings">Edit beacon settings →</a>{{end}}
+      </div>
+    </div>
+  </div>
+
+  {{if .IsSelf}}
+  {{/* Self facts come from configured state — we never appear in our own
+       heard-stations table, so there's no .Station record to lean on. */}}
+  <div class="station-facts-grid">
+    {{if or .St.Lat .St.Lon}}
+    <div class="station-fact">
+      <div class="label">Configured position</div>
+      <div class="value">{{printf "%.4f, %.4f" .St.Lat .St.Lon}}</div>
+    </div>
+    {{end}}
+    <div class="station-fact">
+      <div class="label">Mode</div>
+      <div class="value">{{if .St.Mode}}{{.St.Mode}}{{else}}unset{{end}}</div>
+    </div>
+    {{if .SelfBeacon}}
+    <div class="station-fact">
+      <div class="label">Symbol</div>
+      <div class="value">{{.SelfBeacon.Symbol}}</div>
+    </div>
+    <div class="station-fact">
+      <div class="label">Beacon interval</div>
+      <div class="value">{{div .SelfBeacon.EveryS 60}} min</div>
+    </div>
+    {{end}}
+    <div class="station-fact">
+      <div class="label">TX packets stored</div>
+      <div class="value">{{.PacketCount}}</div>
+    </div>
+  </div>
+
+  {{if .SelfBeacon}}
+  <div class="station-meta">
+    <div><span class="eyebrow">Comment</span>{{.SelfBeacon.Comment}}</div>
+    {{if .SelfBeacon.Path}}<div><span class="eyebrow">Path</span>{{.SelfBeacon.Path}}</div>{{end}}
+  </div>
+  {{end}}
+  {{else}}
+
+  {{if .Station}}
+  <div class="station-facts-grid">
+    {{if and .Station.Lat.Valid .Station.Lon.Valid}}
+    <div class="station-fact">
+      <div class="label">Last position</div>
+      <div class="value">{{printf "%.4f, %.4f" .Station.Lat.Float64 .Station.Lon.Float64}}</div>
+    </div>
+    {{end}}
+    <div class="station-fact">
+      <div class="label">Last heard</div>
+      <div class="value">{{ago .Station.LastSeen}}<span class="dim"> ago</span></div>
+    </div>
+    <div class="station-fact">
+      <div class="label">Packets stored</div>
+      <div class="value">{{.PacketCount}}</div>
+    </div>
+    {{if .Station.Symbol}}
+    <div class="station-fact">
+      <div class="label">Symbol</div>
+      <div class="value">{{.Station.Symbol}}</div>
+    </div>
+    {{end}}
+  </div>
+
+  {{if or .Station.Comment .Station.LastPath}}
+  <div class="station-meta">
+    {{if .Station.Comment}}<div><span class="eyebrow">Comment</span>{{.Station.Comment}}</div>{{end}}
+    {{if .Station.LastPath}}<div><span class="eyebrow">Path</span>{{.Station.LastPath}}</div>{{end}}
+  </div>
+  {{end}}
+  {{else}}
+  <div class="card station-empty">
+    <div class="eyebrow">No record</div>
+    <div class="dim">This station may have been pruned, or has never been heard.</div>
+  </div>
+  {{end}}
+  {{end}}
+
+  {{if .IsSelf}}
+    {{template "consoleBar" (dict
+      "LeftEyebrow" "Transmit history"
+      "LeftMeta"    (printf "%d packets · newest first · max 500" .PacketCount))}}
+  {{else}}
+    {{template "consoleBar" (dict
+      "LeftEyebrow" "Packet history"
+      "LeftMeta"    (printf "%d packets · newest first · max 500" .PacketCount))}}
+  {{end}}
+
+  <div id="pkt-list" class="rx-feed">
+    {{range .RenderedPackets}}{{.}}{{else}}
+    {{if .IsSelf}}
+      {{template "emptyFeed" (dict
+        "Title"   "No transmissions recorded yet."
+        "Tagline" "Once your iGate transmits a beacon, digi, or relay, it'll appear here.")}}
+    {{else}}
+      {{template "emptyFeed" (dict
+        "Title"   "No packets recorded yet."
+        "Tagline" "Once we hear this station again, transmissions appear here.")}}
+    {{end}}
+    {{end}}
+  </div>
+</section>
+{{template "footer" .}}{{end}}
