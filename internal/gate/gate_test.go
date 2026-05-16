@@ -218,6 +218,69 @@ func findSendRF(actions []Action) *Action {
 	return nil
 }
 
+// Preemptive: MYCALL explicitly listed in path (not first unused).
+// With flag off, we ignore it (current behavior).
+func TestPreemptiveDisabledByDefault(t *testing.T) {
+	s := state.State{Callsign: "APRGO-1", TXEnable: true, DigipeatWIDE2: true}
+	pkt := rfPacket("N0CALL-9", "APRGO", []string{"WIDE2-1", "APRGO-1", "WIDE2-1"}, "=hi")
+	got := findSendRF(decideFromRF(pkt, s))
+	if got != nil {
+		t.Fatalf("preempt off: expected no SendRF, got path %v", decodedPath(t, got.RFRaw))
+	}
+}
+
+// Preemptive enabled: scan ahead, MARK-mode the prior unused hops.
+func TestPreemptiveMarksPriorHops(t *testing.T) {
+	s := state.State{Callsign: "APRGO-1", TXEnable: true, PreemptiveDigipeat: true}
+	pkt := rfPacket("N0CALL-9", "APRGO", []string{"WIDE2-1", "APRGO-1", "WIDE2-1"}, "=hi")
+	got := findSendRF(decideFromRF(pkt, s))
+	if got == nil {
+		t.Fatal("preempt on: expected SendRF, got none")
+	}
+	path := decodedPath(t, got.RFRaw)
+	if strings.Join(path, ",") != "WIDE2-1*,APRGO-1*,WIDE2-1" {
+		t.Fatalf("preempt MARK: got %v, want WIDE2-1*,APRGO-1*,WIDE2-1", path)
+	}
+}
+
+// Preemptive must never trigger on generic WIDEn-N — that would break
+// the normal flood semantics. With ONLY PreemptiveDigipeat on (no WIDE
+// flags), a pure-WIDE path should be ignored.
+func TestPreemptiveDoesNotMatchGenericWIDE(t *testing.T) {
+	s := state.State{Callsign: "APRGO-1", TXEnable: true, PreemptiveDigipeat: true}
+	pkt := rfPacket("N0CALL-9", "APRGO", []string{"WIDE2-2", "WIDE2-1"}, "=hi")
+	got := findSendRF(decideFromRF(pkt, s))
+	if got != nil {
+		t.Fatalf("preempt should not fire on pure WIDE path; got %v", decodedPath(t, got.RFRaw))
+	}
+}
+
+// Preemptive: MYCALL is the next unused hop (the simple case). With
+// preempt on we should handle it directly — no path before us to mark.
+func TestPreemptiveNextHopExplicit(t *testing.T) {
+	s := state.State{Callsign: "APRGO-1", TXEnable: true, PreemptiveDigipeat: true}
+	pkt := rfPacket("N0CALL-9", "APRGO", []string{"APRGO-1", "WIDE2-1"}, "=hi")
+	got := findSendRF(decideFromRF(pkt, s))
+	if got == nil {
+		t.Fatal("expected SendRF for MYCALL-as-next-hop with preempt on")
+	}
+	path := decodedPath(t, got.RFRaw)
+	if strings.Join(path, ",") != "APRGO-1*,WIDE2-1" {
+		t.Fatalf("got %v, want APRGO-1*,WIDE2-1", path)
+	}
+}
+
+// Preemptive: if we've already digipeated (MYCALL is in path with *),
+// don't act again — even with preempt on.
+func TestPreemptiveSkipsAlreadyHandled(t *testing.T) {
+	s := state.State{Callsign: "APRGO-1", TXEnable: true, PreemptiveDigipeat: true, DigipeatWIDE2: true}
+	pkt := rfPacket("N0CALL-9", "APRGO", []string{"APRGO-1*", "WIDE2-1"}, "=hi")
+	got := findSendRF(decideFromRF(pkt, s))
+	if got != nil {
+		t.Fatalf("expected no SendRF when already handled; got %v", decodedPath(t, got.RFRaw))
+	}
+}
+
 // Sanity: ensure the example trace from APRS101 §13 still works.
 // `N0CALL>APRS,WIDE1-1,WIDE2-1` → fill-in then full-digi.
 func TestExampleFillThenFull(t *testing.T) {

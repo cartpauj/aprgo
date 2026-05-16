@@ -125,6 +125,13 @@ type State struct {
 	// in areas already saturated with iGates while still bridging
 	// person-to-person chat. Picked via ModeMessaging in the wizard.
 	MessagingOnlyMode bool `json:"messaging_only_mode"`
+	// PreemptiveDigipeat: when true, honor packets that list our callsign
+	// anywhere in the unused portion of the path — not just as the next
+	// hop. Uses MARK mode: prior unused hops are flagged used so the
+	// emitted path preserves the operator's original intent. Never
+	// triggers on generic WIDEn-N tokens (spec §preemptive-digipeating).
+	// Advanced-mode-only; defaults off per Direwolf convention.
+	PreemptiveDigipeat bool `json:"preemptive_digipeat"`
 
 	// UI / housekeeping
 	Theme             string `json:"theme"`              // auto|light|dark

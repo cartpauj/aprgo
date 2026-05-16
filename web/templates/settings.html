@@ -46,6 +46,7 @@
       <label class="cb"><input type="checkbox" name="digipeat_wide1" value="1" {{if .St.DigipeatWIDE1}}checked{{end}}> Fill-in digipeater<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Handle <code>WIDE1-1</code>. Safe for home iGates.</span></span></label>
       <label class="cb"><input type="checkbox" name="digipeat_wide2" value="1" {{if .St.DigipeatWIDE2}}checked{{end}}> Full digipeater<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Handle <code>WIDE2-N</code> with decrement. Only enable from a high-elevation site.</span></span></label>
       <label class="cb"><input type="checkbox" name="viscous_delay" value="1" {{if .St.ViscousDelay}}checked{{end}}> Viscous delay<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Hold <code>WIDE1-1</code> retransmits 3–5 s and cancel if a higher digi handled it first. Standard fill-in politeness — leave on unless you have a reason.</span></span></label>
+      <label class="cb"><input type="checkbox" name="preemptive_digipeat" value="1" {{if .St.PreemptiveDigipeat}}checked{{end}}> Preemptive digipeat<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Honor packets that list your callsign anywhere in the path, not just as the next hop. Prior unused hops are marked used (MARK mode) so the original path is preserved on air. Never triggers on generic <code>WIDEn-N</code>.</span></span></label>
       <label class="cb"><input type="checkbox" name="offline_mode" value="1" {{if .St.OfflineMode}}checked{{end}}> Offline mode<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Skip APRS-IS entirely. Off-grid digi setups.</span></span></label>
       <label class="cb"><input type="checkbox" name="messaging_only_mode" value="1" {{if .St.MessagingOnlyMode}}checked{{end}}> Messaging-only<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Gate only messages and acks RF↔IS. Skip beacons, weather, telemetry.</span></span></label>
     {{else}}
@@ -59,6 +60,7 @@
           <span class="flag-chip {{if .St.DigipeatWIDE1}}on{{end}}">Digi WIDE1-1</span>
           <span class="flag-chip {{if .St.DigipeatWIDE2}}on{{end}}">Digi WIDE2-N</span>
           <span class="flag-chip {{if .St.ViscousDelay}}on{{end}}">Viscous delay</span>
+          <span class="flag-chip {{if .St.PreemptiveDigipeat}}on{{end}}">Preemptive</span>
           <span class="flag-chip {{if .St.OfflineMode}}on{{end}}">Offline</span>
           <span class="flag-chip {{if .St.MessagingOnlyMode}}on{{end}}">Messaging-only</span>
         </div>

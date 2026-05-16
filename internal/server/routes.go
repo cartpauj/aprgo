@@ -889,6 +889,7 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 			st.ViscousDelay = r.FormValue("viscous_delay") == "1"
 			st.OfflineMode = r.FormValue("offline_mode") == "1"
 			st.MessagingOnlyMode = r.FormValue("messaging_only_mode") == "1"
+			st.PreemptiveDigipeat = r.FormValue("preemptive_digipeat") == "1"
 		}
 		if t := r.FormValue("theme"); t == "auto" || t == "light" || t == "dark" {
 			st.Theme = t

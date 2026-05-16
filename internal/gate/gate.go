@@ -81,7 +81,7 @@ func decideFromRF(p aprs.Packet, s state.State) []Action {
 	var actions []Action
 
 	// Digipeat decision (independent of gating)
-	if (s.DigipeatWIDE1 || s.DigipeatWIDE2) && s.TXEnable && p.Frame.Raw != nil {
+	if (s.DigipeatWIDE1 || s.DigipeatWIDE2 || s.PreemptiveDigipeat) && s.TXEnable && p.Frame.Raw != nil {
 		if a := digipeatAction(p, s); a != nil {
 			actions = append(actions, *a)
 		}
@@ -157,23 +157,50 @@ func digipeatAction(p aprs.Packet, s state.State) *Action {
 	}
 	myCallUp := strings.ToUpper(s.Callsign)
 
-	// If MYCALL is already in the path (used or unused), we either
-	// already digipeated this one, or someone is forging us — either
-	// way, don't act.
-	for _, hop := range p.Frame.Path {
-		if strings.ToUpper(strings.TrimSuffix(hop, "*")) == myCallUp {
-			return nil
+	// Scan path once: find where MYCALL appears (if at all) and the
+	// first unused hop.
+	myCallIdx := -1
+	myCallAlreadyUsed := false
+	idx := -1
+	for i, hop := range p.Frame.Path {
+		used := strings.HasSuffix(hop, "*")
+		if idx < 0 && !used {
+			idx = i
+		}
+		if myCallIdx < 0 && strings.ToUpper(strings.TrimSuffix(hop, "*")) == myCallUp {
+			myCallIdx = i
+			myCallAlreadyUsed = used
 		}
 	}
 
-	// First hop without a used-bit (*) is the one we'd handle.
-	idx := -1
-	for i, hop := range p.Frame.Path {
-		if !strings.HasSuffix(hop, "*") {
-			idx = i
-			break
+	// MYCALL is in the path with the used-bit set: we already digipeated
+	// this one (or someone is forging us). Either way, don't re-act.
+	if myCallIdx >= 0 && myCallAlreadyUsed {
+		return nil
+	}
+
+	// MYCALL is in the unused portion of the path — preemptive case.
+	// Per spec, this is only honored when the operator opts in; never
+	// applied to generic WIDEn-N tokens (parseWIDE skips those above).
+	if myCallIdx >= 0 {
+		if !s.PreemptiveDigipeat {
+			return nil
+		}
+		newPath := buildPreemptPath(p.Frame.Path, myCallIdx, s.Callsign)
+		if len(newPath) > maxPathHops {
+			return nil
+		}
+		raw, err := ax25.EncodeUIFrame(p.Frame.Src, p.Frame.Dest, newPath, p.Frame.Info)
+		if err != nil {
+			return nil
+		}
+		return &Action{
+			Kind:   SendRF,
+			RFRaw:  raw,
+			Reason: "preempt digi",
 		}
 	}
+
 	if idx < 0 {
 		return nil
 	}
@@ -227,6 +254,30 @@ func digipeatAction(p aprs.Packet, s state.State) *Action {
 		Viscous: viscous,
 		Reason:  fmt.Sprintf("digi WIDE%d-%d", n, N),
 	}
+}
+
+// buildPreemptPath constructs the new path for a preemptive digipeat in
+// MARK mode (APRS 1.2 §preemptive-digipeating): every prior unused hop
+// gets the has-been-digipeated bit set, MYCALL takes the slot it occupied
+// in the path with that bit set, and hops after MYCALL are left alone for
+// downstream digis to consume.
+func buildPreemptPath(path []string, myCallIdx int, myCall string) []string {
+	out := make([]string, len(path))
+	for i, hop := range path {
+		switch {
+		case i < myCallIdx:
+			if strings.HasSuffix(hop, "*") {
+				out[i] = hop
+			} else {
+				out[i] = hop + "*"
+			}
+		case i == myCallIdx:
+			out[i] = myCall + "*"
+		default:
+			out[i] = hop
+		}
+	}
+	return out
 }
 
 // parseWIDE extracts (n, N) from a hop token of the form "WIDEn-N".

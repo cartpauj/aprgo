@@ -10,9 +10,6 @@ right now — note the reason next to the item.
 
 ## On-air behavior
 
-- [ ] **Preemptive digipeating.** If `MYCALL` (unused) appears explicitly in
-  the path, even when not the first unused hop, we should digipeat — that's
-  the operator handing us a direct route. Today we ignore it.
 - [ ] **Global TX rate cap.** We have per-source rate limits but no global
   "no more than N TXs/min total" backstop. Add a global token bucket.
 - [ ] **SSn-N regional aliases.** State-WIDE equivalents (`ARIZ1-1`,

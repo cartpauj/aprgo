@@ -280,6 +280,7 @@ func (s *Server) wizardSave(w http.ResponseWriter, r *http.Request) {
 		d.Draft.ViscousDelay = r.FormValue("viscous_delay") == "1"
 		d.Draft.OfflineMode = r.FormValue("offline_mode") == "1"
 		d.Draft.MessagingOnlyMode = r.FormValue("messaging_only_mode") == "1"
+		d.Draft.PreemptiveDigipeat = r.FormValue("preemptive_digipeat") == "1"
 	case "beacon":
 		comment := strings.TrimSpace(r.FormValue("beacon_comment"))
 		secs := state.DefaultBeaconEveryS
@@ -362,6 +363,7 @@ func (s *Server) commitWizardDraft(d *wizardDraft) error {
 		st.ViscousDelay = d.Draft.ViscousDelay
 		st.OfflineMode = d.Draft.OfflineMode
 		st.MessagingOnlyMode = d.Draft.MessagingOnlyMode
+		st.PreemptiveDigipeat = d.Draft.PreemptiveDigipeat
 		st.SetupComplete = true
 		return nil
 	})
@@ -481,6 +483,11 @@ func (s *Server) wizardBTScan(w http.ResponseWriter, r *http.Request) {
 // beacons later from the settings page.
 func applyModeDefaults(st *state.State, m state.Mode) {
 	var path []string
+	// Every preset clears PreemptiveDigipeat — it's an Advanced-only opt-in.
+	// ModeAdvanced (handled below) leaves the operator's setting alone.
+	if m != state.ModeAdvanced {
+		st.PreemptiveDigipeat = false
+	}
 	switch m {
 	case state.ModeRXOnly:
 		st.TXEnable = false
