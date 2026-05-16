@@ -30,10 +30,6 @@ right now — note the reason next to the item.
   reminding the operator about TX prerequisites + license-class authorization.
 - [ ] **TX-enable toggle confirmation.** In the settings page, toggling
   `TXEnable` off/on should warn that pending beacons may be dropped.
-- [ ] **Regional ISServer defaults.** Today the wizard always seeds
-  `rotate.aprs2.net:14580`. Smart default: derive from lat/lon → `euro.aprs2.net`
-  for EU, `aunz.aprs2.net` for AU/NZ, `asia.aprs2.net` for AS. Or add a
-  region dropdown to the location step.
 - [ ] **Auto-degrade UI when IS has been down a long time.** Cosmetic: after
   ~30 min of `ISConnected=false`, soften the red "DISCONNECTED" banner to a
   neutral "Operating RF-only — internet down ~Xh ago" chip. Runtime keeps
@@ -50,9 +46,6 @@ right now — note the reason next to the item.
 
 ## Observability / ops
 
-- [ ] **`/metrics` Prometheus endpoint.** Counters for packets-gated,
-  digipeated, dropped-by-rate-limit, queue depths, RF/IS connection
-  uptime, DB row counts. Trivial to add via `prometheus/client_golang`.
 - [ ] **TNC-not-in-KISS detection.** If bytes flow but the splitter never
   produces a valid AX.25 frame for 30 s, log a warning and surface a
   diagnostic to the UI: "TNC may not be in KISS mode — check device config."
@@ -120,8 +113,6 @@ right now — note the reason next to the item.
 - [ ] **`sdptool` multi-record parsing.** Today we pick the first `Channel:`
   line from `sdptool search`. Multi-profile devices (DUN + SPP + headset)
   could have the wrong channel land first. Parse by service-record block.
-- [ ] **`gate.Drop` instrumentation as Prometheus labels.** Per-reason
-  counters once metrics endpoint exists.
 - [ ] **Mic-E speed extreme-value wraparound.** Spec subtracts 800 once when
   encoded value ≥ 800. Malformed input could exceed; loop subtraction would
   be more defensive.
@@ -172,8 +163,20 @@ What's done so we don't redo:
   APRS-IS at all — off-grid digi), advanced (operator manages all flags)
 - Full WIDE2-N digipeating per New-N Paradigm — `WIDEn-N` → `MYCALL*,WIDEn-(N-1)`
   with N>2 trap and 8-hop path cap
+- Preemptive digipeating (Advanced-mode-only opt-in, MARK mode per APRS 1.2
+  spec — honors explicit MYCALL anywhere in the unused path; never triggers
+  on generic WIDEn-N)
 - Viscous delay for fill-in WIDE1-1 (randomized 3–5 s hold + cancel-on-RF-echo)
-- Per-source token-bucket rate limiter
+- TX inter-frame spacing: 1 s minimum gap in `rf.writeLoop` between RF writes
+- Per-source rate limiter: >30 packets in any 60-second window puts the
+  source in a 15-minute timeout. Drop-ring entry on trip; live list of
+  currently-blocked sources on `/diagnostics`; "rate-limited" chip on the
+  stations page
+- Intake-time bogus-position hard drop: RF packets whose claimed position
+  is >500 km from our station are dropped before storage (catches AnyTone
+  Guangzhou-factory GPS-not-yet-locked bug, etc.)
+- Per-beacon position ambiguity (levels 0–4 per APRS spec §6) for privacy:
+  blanks trailing digits of broadcast lat/lon
 - Dupe table on content hash + 15-min message-body dedupe fallback
 - Auto-ACK for messages addressed to us (RF→RF, IS→IS)
 - Outbound-message retry queue (5 attempts × 30 s, cancel on ack)
@@ -191,8 +194,14 @@ What's done so we don't redo:
 - Pure-Go SQLite (`modernc.org/sqlite`) for arm64 cross-compile
 - Tuned pragmas for SD-card-backed deploys (cache_size, mmap_size, temp_store)
 - `packets.lat`/`packets.lon` columns populated at intake for fast trail queries
-- Gate-drop reason ring buffer + `/diagnostics` page (live-polled)
+- Gate-drop reason ring buffer + `/diagnostics` page (live-polled), with a
+  "Currently rate-limited" section listing blocked sources + expiry
+- `/stats` page: uptime, gate decisions (sentIS / sentRF / digipeats / drops),
+  intake-guard counters (dupes / distance / rate-limit), time-windowed packet
+  counts from DB (1h/24h/7d/all), top sources, top drop reasons, storage
 - Per-beacon "Last fired: X ago" indicator on Settings
+- Stations page: time-window dropdown (1h/24h/7d/30d) + unified search
+  (stations by callsign/comment + message bodies)
 
 ### Web UI
 - Operator-console aesthetic: IBM Plex Sans/Mono, phosphor-on-ink,

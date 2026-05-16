@@ -29,6 +29,7 @@
       <a href="/map"       {{if eq .Title "Map"}}aria-current="page"{{end}}>Map</a>
       <a href="/messages"  {{if eq .Title "Messages"}}aria-current="page"{{end}}>Messages</a>
       <a href="/stations"  {{if or (eq .Title "Stations") (and (ge (len .Title) 8) (eq (slice .Title 0 8) "Station "))}}aria-current="page"{{end}}>Stations</a>
+      <a href="/stats"     {{if eq .Title "Stats"}}aria-current="page"{{end}}>Stats</a>
       <a href="/diagnostics" {{if eq .Title "Diagnostics"}}aria-current="page"{{end}}>Diag</a>
       <a href="/settings"  {{if eq .Title "Settings"}}aria-current="page"{{end}}>Settings</a>
     </nav>

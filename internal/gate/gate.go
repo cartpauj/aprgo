@@ -73,6 +73,10 @@ func Decide(p aprs.Packet, s state.State, heardOnRF HeardChecker) []Action {
 		return decideFromRF(p, s)
 	case ax25.SrcIS:
 		return decideFromIS(p, s, heardOnRF)
+	case ax25.SrcTX:
+		// Synthesized echo of our own transmission, published purely so
+		// the dashboard live-feed can show it. No gating decision applies.
+		return nil
 	}
 	return []Action{{Kind: Drop, Reason: "unknown origin"}}
 }

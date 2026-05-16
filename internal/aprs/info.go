@@ -44,6 +44,19 @@ type Decoded struct {
 	TelemAnalog  [5]float64
 	TelemBits    [8]bool
 
+	// Weather is non-nil when a positional weather report was decoded out
+	// of the comment. Fields are populated per APRS spec §12; check the
+	// *Set flags on individual subfields to distinguish "not reported"
+	// from "reported as 0."
+	Weather *Weather
+
+	// PHG is non-nil when a PHGxxxx code was decoded. Carries
+	// power/height/gain/directivity + a derived range estimate in miles.
+	PHG *PHG
+
+	// RNG is non-nil when an explicit RNGxxxx range circle was decoded.
+	RNG *RNG
+
 	// isMicE is set when decodeMicE produced this struct. Used to scope
 	// Mic-E-only post-processing (the "_X" status code trim) so non-Mic-E
 	// packets ending in "_X" don't pick up spurious Status fields.
@@ -148,8 +161,11 @@ func postProcess(d *Decoded) {
 	}
 
 	// Course/Speed at the START of the comment: "NNN/NNN" course/knots.
-	// Only applies if no Mic-E speed/course was already set.
-	if d.Speed < 0 {
+	// Skip entirely for weather-symbol stations (`_` as the symbol code) —
+	// for them the leading NNN/NNN is wind direction/speed, not motion.
+	// Weather parser below picks it up correctly.
+	isWXSym := len(d.Symbol) >= 2 && d.Symbol[1] == '_'
+	if d.Speed < 0 && !isWXSym {
 		if m := csRegex.FindStringSubmatch(c); m != nil {
 			course, _ := strconv.Atoi(m[1])
 			knots, _ := strconv.Atoi(m[2])
@@ -179,7 +195,48 @@ func postProcess(d *Decoded) {
 		}
 	}
 
+	// Weather, PHG, RNG: each pattern strips its matched span from the
+	// comment so the parsed fields and the residual comment don't
+	// double-display. WX stations are gated on the `_` symbol code to
+	// avoid mis-parsing positional comments that happen to match the
+	// weather regex shape.
+	if isWXSym || looksLikeWeather(c) {
+		if w, stripped := parseWeather(c); w != nil {
+			d.Weather = w
+			c = stripped
+		}
+	}
+	if p, stripped := parsePHG(c); p != nil {
+		d.PHG = p
+		c = stripped
+	}
+	if r, stripped := parseRNG(c); r != nil {
+		d.RNG = r
+		c = stripped
+	}
+
 	d.Comment = c
+}
+
+// looksLikeWeather is a cheap pre-filter: returns true when the comment
+// contains at least three weather-field markers in a row. Lets WX-encoded
+// comments on non-`_`-symbol stations (some operators put weather data on
+// their default symbol) still be parsed without triggering false positives
+// on arbitrary text.
+func looksLikeWeather(c string) bool {
+	hits := 0
+	for _, k := range []byte{'g', 't', 'r', 'p', 'P', 'h', 'b'} {
+		if i := strings.IndexByte(c, k); i >= 0 {
+			// Quick check: followed by 2+ digits.
+			if i+3 <= len(c) && c[i+1] >= '0' && c[i+1] <= '9' && c[i+2] >= '0' && c[i+2] <= '9' {
+				hits++
+				if hits >= 3 {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 var (

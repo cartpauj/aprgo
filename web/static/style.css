@@ -643,7 +643,6 @@ input[type="checkbox"] {
 .page-head h1 { margin: 0; }
 .page-head .lede {
   color: var(--muted);
-  max-width: 60ch;
   margin-top: var(--gap-2);
   font-size: 0.92rem;
 }
@@ -879,6 +878,25 @@ html.theme-light .rx-feed, html.theme-auto .rx-feed {
 .pkt .alt     { color: var(--alt-color); font-size: 0.85em; }
 .pkt .freq    { color: var(--freq-color); font-size: 0.85em; font-weight: 500; }
 .pkt .status  { color: var(--warn); font-size: 0.85em; }
+.pkt .wx      { color: var(--info); font-size: 0.85em; font-variant-numeric: tabular-nums; }
+.pkt .phg     { color: var(--muted); font-size: 0.78em; padding: 1px 6px; background: var(--panel-overlay); border-radius: 2px; }
+.pkt .dev-chip {
+  display: inline-block;
+  padding: 0 5px;
+  margin-left: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.7em;
+  letter-spacing: 0.02em;
+  color: var(--alt-color);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  vertical-align: 1px;
+}
+/* Path hop styling: used (digi*) hops accent-colored, q-construct hops dimmed
+   with a leading separator look. */
+.pkt .path .hop          { color: var(--muted); }
+.pkt .path .hop.is-used  { color: var(--accent); font-weight: 500; }
+.pkt .path .hop.is-q     { color: var(--alt-color); opacity: 0.75; font-style: italic; }
 
 .pkt .info-raw { display: none; color: var(--fg); }
 body.view-raw .pkt .info-parsed { display: none; }
@@ -1018,7 +1036,9 @@ body.view-raw .pkt .info-raw { display: inline; }
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--r-3);
-  overflow: hidden;
+  /* overflow: visible (default) so info-tip popovers can escape the card edge.
+     border-radius alone clips child backgrounds enough; no children currently
+     paint outside the rounded corners. */
 }
 /* Collapsible variant (<details>) — used for the Account section so it
    doesn't compete with the main save bar above it. */
@@ -1723,6 +1743,86 @@ body.view-raw .pkt .info-raw { display: inline; }
 .station-meta .eyebrow { margin-right: 8px; }
 .station-empty { text-align: center; padding: var(--gap-6); }
 
+/* Station detail cards — Equipment / Weather / Coverage. Grid auto-fits so
+   each card breathes regardless of how many are present. */
+.station-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--gap-3);
+  margin-bottom: var(--gap-4);
+}
+.station-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  padding: var(--gap-3) var(--gap-4);
+}
+.station-card .card-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.station-card .card-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--fg-strong);
+  line-height: 1.4;
+}
+.station-card .card-sub {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.station-card.wx-card .wx-dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+.station-card.wx-card .wx-dl dt {
+  color: var(--muted);
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  align-self: center;
+}
+.station-card.wx-card .wx-dl dd {
+  margin: 0;
+  color: var(--fg-strong);
+  font-variant-numeric: tabular-nums;
+}
+/* Path hop chain used inside station-meta. */
+.station-meta .path-chain { font-family: var(--font-mono); font-size: 0.85rem; }
+.station-meta .path-chain .hop          { color: var(--muted); }
+.station-meta .path-chain .hop.is-used  { color: var(--accent); font-weight: 500; }
+.station-meta .path-chain .hop.is-q     { color: var(--alt-color); opacity: 0.75; font-style: italic; }
+.station-meta .path-chain .path-sep     { color: var(--muted-2); margin: 0 2px; }
+.station-meta .hop-summary              { margin-left: 8px; font-size: 0.8rem; }
+
+/* Map popup additions */
+.popup-dev {
+  display: inline-block;
+  padding: 0 5px;
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
+  color: var(--alt-color);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  vertical-align: 1px;
+}
+.popup-wx { font-variant-numeric: tabular-nums; }
+/* The // comment-marker pseudo-element is meaningful for freeform op
+   comments but reads as noise on a structured weather summary. */
+.popup-wx::before { content: none !important; }
+
 /* ─── Wizard additions ────────────────────────────────────────────────── */
 .setup .page-head .lede { display: none; }
 .setup-progress {
@@ -1849,6 +1949,16 @@ body.view-raw .pkt .info-raw { display: inline; }
   margin-top: 6px;
   max-width: 320px;
 }
+.tnc-picker .tcp-fields {
+  display: flex;
+  gap: var(--gap-3);
+  margin-top: var(--gap-2);
+  margin-left: 24px; /* aligns under the radio's label text */
+  flex-wrap: wrap;
+}
+.tnc-picker .tcp-fields .tcp-host-label { flex: 2 1 220px; }
+.tnc-picker .tcp-fields .tcp-port-label { flex: 0 0 110px; }
+.tnc-picker .tcp-fields input { width: 100%; }
 .tnc-scan-row { display: flex; gap: var(--gap-3); align-items: center; margin-top: var(--gap-3); flex-wrap: wrap; }
 .scan-result  { margin-top: var(--gap-2); }
 
@@ -2593,3 +2703,110 @@ html.theme-light .chat-thread, html.theme-auto .chat-thread { background: var(--
   content: "●";
   color: var(--accent);
 }
+.flag-chip.blocked {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+.flag-chip.blocked::before {
+  content: "⏱";
+  color: var(--warn);
+}
+.stations-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--gap-3);
+  margin-bottom: var(--gap-4);
+}
+.stations-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+/* All interactive controls share the same height so the Window/Search/Apply
+   row reads as one cohesive band rather than three differently-sized boxes. */
+.stations-controls select,
+.stations-controls input[type="search"],
+.stations-controls > .btn {
+  height: 34px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+}
+.stations-controls select { width: auto; }
+.stations-controls .stations-search { flex: 1 1 240px; min-width: 200px; }
+.stations-controls input[type="search"] { width: 100%; }
+.stations-msg-head {
+  margin-top: var(--gap-5);
+  margin-bottom: var(--gap-3);
+  font-size: 1.05rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+.stations-msgs td { font-size: 0.9rem; }
+.stats-page h2.stats-h2 {
+  margin-top: var(--gap-5);
+  margin-bottom: var(--gap-3);
+  font-size: 0.85rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--gap-3);
+}
+.stats-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.stats-card .eyebrow { margin-bottom: 2px; }
+.stats-card .stats-big {
+  font-family: var(--font-mono);
+  font-size: 1.6rem;
+  color: var(--fg-strong);
+  line-height: 1.1;
+}
+.stats-card .stats-sub {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.stats-card .stats-sub .mono-num {
+  color: var(--fg);
+  margin-right: 4px;
+}
+.stats-two-col {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--gap-5);
+}
+.stats-counts td:first-child, .stats-counts th:first-child { width: auto; }
+.diag-blocked {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--r-3);
+  padding: 12px 16px;
+  margin-bottom: var(--gap-4);
+}
+.diag-blocked .eyebrow { margin-bottom: 6px; }
+.diag-blocked-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  font-size: 0.9rem;
+}
+.diag-blocked-list a { font-family: var(--font-mono); }

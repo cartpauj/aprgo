@@ -87,7 +87,16 @@
       </div>
     {{else}}
       <label>Server
-        <input type="text" name="is_server" value="{{.St.ISServer}}" placeholder="noam.aprs2.net:14580">
+        <select id="is-server-region" class="is-server-region">
+          <option value="rotate.aprs2.net:14580">Global rotation — rotate.aprs2.net</option>
+          <option value="noam.aprs2.net:14580">North America — noam.aprs2.net</option>
+          <option value="euro.aprs2.net:14580">Europe — euro.aprs2.net</option>
+          <option value="asia.aprs2.net:14580">Asia — asia.aprs2.net</option>
+          <option value="aunz.aprs2.net:14580">Oceania (AU/NZ) — aunz.aprs2.net</option>
+          <option value="soam.aprs2.net:14580">South America — soam.aprs2.net</option>
+          <option value="custom">Custom…</option>
+        </select>
+        <input type="text" id="is-server-custom" name="is_server" value="{{.St.ISServer}}" placeholder="host:port">
       </label>
       <label><span class="label-head">Filter<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop"><code>r/LAT/LON/KM</code> = radius scope. Empty = full firehose (you don't want this).</span></span></span>
         <input type="text" name="is_filter" value="{{.St.ISFilter}}" placeholder="r/LAT/LON/150">

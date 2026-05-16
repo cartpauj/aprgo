@@ -117,8 +117,15 @@
       header +=
         '<a class="popup-call" href="/stations/' + encodeURIComponent(st.callsign) +
         '">' + esc(st.callsign) + "</a>";
-      if (st.symbol_name) header += ' <span class="popup-symname">' + esc(st.symbol_name) + "</span>";
-      else if (st.symbol) header += ' <span class="popup-symname">' + esc(st.symbol) + "</span>";
+      // Symbol name + device chip share the right side of the header row.
+      var symBits = [];
+      if (st.symbol_name) symBits.push(esc(st.symbol_name));
+      else if (st.symbol) symBits.push(esc(st.symbol));
+      if (st.device) {
+        symBits.push('<span class="popup-dev" title="' + esc(st.device_tocall || "") +
+                     '">' + esc(st.device) + "</span>");
+      }
+      if (symBits.length) header += ' <span class="popup-symname">' + symBits.join(" · ") + "</span>";
       parts.push('<div class="popup-header">' + header + "</div>");
       parts.push(
         '<div class="popup-actions">' +
@@ -132,12 +139,23 @@
       if (st.course) facts.push(["Heading", st.course + "°"]);
       if (st.frequency) facts.push(["Frequency", st.frequency]);
       if (st.status) facts.push(["Status", st.status]);
+      if (st.phg) facts.push(["Coverage", st.phg]);
+      else if (st.rng_mi) facts.push(["Range", "~" + st.rng_mi + " mi (RNG)"]);
       facts.push(["Heard", ago(st.last_seen)]);
       facts.push(["Packets", st.pkt_count]);
-      if (st.last_path) facts.push(["Path", st.last_path]);
+      if (st.last_path) {
+        var pathVal = st.last_path;
+        if (st.hops) pathVal += "  ·  " + st.hops;
+        if (st.q) pathVal += "  ·  " + st.q +
+          (st.igate ? " by " + st.igate : "");
+        facts.push(["Path", pathVal]);
+      }
       parts.push(factsDL(facts));
 
-      if (st.comment) parts.push('<div class="popup-comment">' + esc(st.comment) + "</div>");
+      // Weather summary line replaces the alphabet-soup comment for WX stations.
+      // Non-WX stations show the regular cleaned-up comment as before.
+      if (st.wx) parts.push('<div class="popup-comment popup-wx">' + esc(st.wx) + "</div>");
+      else if (st.comment) parts.push('<div class="popup-comment">' + esc(st.comment) + "</div>");
       if (st.last_info)
         parts.push(
           '<details class="popup-raw"><summary>raw packet</summary><code>' +
@@ -199,9 +217,18 @@
     // Track trail polylines so a window-change can clear the old set.
     var trails = new Map();
     // Focus mode: when non-null, only this callsign's marker + trail render.
-    // Toggled by the "View only this station" link inside the popup; cleared
-    // by the floating "back to all" pill at the top of the map.
+    // Toggled by the "View only this station" link inside the popup, the
+    // ?focus=CALL URL param (from station detail's "Show on map" link), or
+    // the floating "back to all" pill at the top of the map.
     var focused = null;
+    var pendingPanTo = null; // callsign to pan/zoom to after first marker load
+    try {
+      var urlFocus = new URLSearchParams(window.location.search).get("focus");
+      if (urlFocus) {
+        focused = urlFocus.toUpperCase();
+        pendingPanTo = focused;
+      }
+    } catch (e) { /* old browsers — silently skip */ }
     var focusPill = document.getElementById("focus-pill");
     var focusPillCall = document.getElementById("focus-pill-call");
 
@@ -283,6 +310,16 @@
             (movers ? " · " + movers + " moving" : "");
         }
         applyFocusVisibility();
+        // After the first load only: if we came in with ?focus=CALL, pan
+        // and zoom to that station's marker so the operator actually sees
+        // their target. Subsequent refreshes keep whatever view they panned to.
+        if (pendingPanTo) {
+          var m = markers.get(pendingPanTo);
+          if (m) {
+            map.setView(m.getLatLng(), Math.max(map.getZoom(), 11));
+          }
+          pendingPanTo = null;
+        }
       } catch (e) {
         status.textContent = "load error: " + e.message;
       }

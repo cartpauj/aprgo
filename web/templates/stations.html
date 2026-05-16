@@ -1,9 +1,24 @@
 {{define "stations.html"}}{{template "header" .}}
 <section>
   {{template "pageHead" (dict
-    "Eyebrow" "Last 24 hours"
-    "Title"   "Heard stations"
-    "Lede"    "Every station your iGate has decoded recently. Click a callsign for its full packet history.")}}
+    "Eyebrow" "Heard stations"
+    "Title"   "Stations"
+    "Lede"    "Every station your iGate has decoded. Click a callsign for its full packet history. Use the search box to filter by callsign or comment — it also searches message bodies.")}}
+
+  <form method="get" action="/stations" class="stations-controls">
+    <label>Window
+      <select name="window" onchange="this.form.submit()">
+        {{range .WindowOptions}}
+        <option value="{{.Value}}" {{if eq $.Window .Value}}selected{{end}}>{{.Label}}</option>
+        {{end}}
+      </select>
+    </label>
+    <label class="stations-search">Search
+      <input type="search" name="q" value="{{.Query}}" placeholder="callsign, comment, message body…" maxlength="64">
+    </label>
+    <button type="submit" class="btn ghost">Apply</button>
+    {{if .Query}}<a href="/stations?window={{.Window}}" class="btn ghost">Clear</a>{{end}}
+  </form>
 
   <table class="data-table stations">
     <thead>
@@ -19,7 +34,7 @@
     <tbody>
       {{range .Stations}}
       <tr>
-        <td class="col-call"><a href="/stations/{{.Callsign}}">{{.Callsign}}</a></td>
+        <td class="col-call"><a href="/stations/{{.Callsign}}">{{.Callsign}}</a>{{if index $.BlockedSrcs .Callsign}} <span class="flag-chip blocked" title="Over 30 packets/min — in 15-minute timeout">rate-limited</span>{{end}}</td>
         <td class="col-time">{{ago .LastSeen}} ago</td>
         <td>
           {{if and .Lat.Valid .Lon.Valid}}
@@ -34,13 +49,37 @@
       <tr class="empty-row">
         <td colspan="6">
           <div class="empty-stack">
-            <div class="eyebrow">No stations heard yet</div>
-            <div>Once packets start coming in, every unique callsign lands here.</div>
+            <div class="eyebrow">{{if .Query}}No stations match {{else}}No stations heard in this window{{end}}</div>
+            <div>{{if .Query}}Try a different search or a wider window.{{else}}Once packets start coming in, every unique callsign lands here.{{end}}</div>
           </div>
         </td>
       </tr>
       {{end}}
     </tbody>
   </table>
+
+  {{if .MessageMatches}}
+  <h2 class="stations-msg-head">Messages matching “{{.Query}}”</h2>
+  <table class="data-table stations-msgs">
+    <thead>
+      <tr>
+        <th>When</th>
+        <th>Direction</th>
+        <th>Source → Dest</th>
+        <th>Body</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .MessageMatches}}
+      <tr>
+        <td class="col-time">{{ago .Time}} ago</td>
+        <td><span class="dir-pill {{if eq .Direction "out"}}out{{else}}in{{end}}">{{.Direction}}</span></td>
+        <td class="col-call"><a href="/stations/{{.Source}}">{{.Source}}</a> → <a href="/stations/{{.Dest}}">{{.Dest}}</a></td>
+        <td>{{.Body}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{end}}
 </section>
 {{template "footer" .}}{{end}}

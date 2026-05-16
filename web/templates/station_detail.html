@@ -6,6 +6,8 @@
       <h1 class="callsign">{{.Callsign}}{{if .IsSelf}}<span class="self-badge">YOU</span>{{end}}</h1>
       <div class="station-links">
         <a href="/stations">← All stations</a>
+        {{if or .IsSelf (and .Station.Lat.Valid .Station.Lon.Valid)}}<span class="sep">·</span>
+        <a href="/map?focus={{.Callsign}}">↦ Show on map</a>{{end}}
         <span class="sep">·</span>
         <a href="https://aprs.fi/info/a/{{.Callsign}}" target="_blank" rel="noopener">View on aprs.fi ↗</a>
         {{if .IsSelf}}<span class="sep">·</span>
@@ -76,10 +78,50 @@
     {{end}}
   </div>
 
-  {{if or .Station.Comment .Station.LastPath}}
+  {{if or .Station.Comment .Station.LastPath .Device .Weather .PHG .RNG}}
+  <div class="station-cards">
+    {{if .Device}}
+    <div class="station-card">
+      <div class="card-eyebrow">Equipment</div>
+      <div class="card-title">{{.Device.Display}}</div>
+      <div class="card-sub">Tocall <code>{{.Device.Tocall}}</code>{{if .Device.Class}} · {{.Device.Class}}{{end}}{{if .Device.OS}} · {{.Device.OS}}{{end}}</div>
+    </div>
+    {{end}}
+    {{if .Weather}}
+    <div class="station-card wx-card">
+      <div class="card-eyebrow">Weather</div>
+      <dl class="wx-dl">
+        {{if .Weather.TempSet}}<dt>Temperature</dt><dd>{{.Weather.TempF}}°F</dd>{{end}}
+        {{if .Weather.WindDirSet}}<dt>Wind</dt><dd>{{.Weather.WindSpeedMPH}} mph from {{.Weather.WindDirDeg}}°{{if .Weather.WindGustSet}} · gust {{.Weather.WindGustMPH}} mph{{end}}</dd>{{end}}
+        {{if .Weather.HumiditySet}}<dt>Humidity</dt><dd>{{.Weather.HumidityPct}}%</dd>{{end}}
+        {{if .Weather.PressureSet}}<dt>Pressure</dt><dd>{{printf "%.1f mb" (divf (float .Weather.PressureTenthMb) 10.0)}}</dd>{{end}}
+        {{if or .Weather.Rain1hSet .Weather.Rain24hSet .Weather.RainMidSet}}<dt>Rain</dt><dd>
+          {{if .Weather.Rain1hSet}}{{printf "%.2f\"" (divf (float .Weather.Rain1hHundIn) 100.0)}} (1h){{end}}
+          {{if .Weather.Rain24hSet}} · {{printf "%.2f\"" (divf (float .Weather.Rain24hHundIn) 100.0)}} (24h){{end}}
+          {{if .Weather.RainMidSet}} · {{printf "%.2f\"" (divf (float .Weather.RainMidHundIn) 100.0)}} (since midnight){{end}}
+        </dd>{{end}}
+        {{if .Weather.LuminositySet}}<dt>Luminosity</dt><dd>{{.Weather.LuminosityWm2}} W/m²</dd>{{end}}
+      </dl>
+    </div>
+    {{end}}
+    {{if or .PHG .RNG}}
+    <div class="station-card">
+      <div class="card-eyebrow">Claimed coverage</div>
+      {{if .PHG}}
+      <div class="card-title">{{.PHG.PowerW}} W · {{.PHG.HeightFt}} ft HAAT · {{.PHG.GainDB}} dB {{if .PHG.Omni}}omni{{else}}@ {{.PHG.DirDeg}}°{{end}}</div>
+      <div class="card-sub">~{{printf "%.0f" .PHG.RangeMiles}} mi estimated range (PHG)</div>
+      {{end}}
+      {{if .RNG}}<div class="card-sub">~{{.RNG.Miles}} mi declared range (RNG)</div>{{end}}
+    </div>
+    {{end}}
+  </div>
   <div class="station-meta">
     {{if .Station.Comment}}<div><span class="eyebrow">Comment</span>{{.Station.Comment}}</div>{{end}}
-    {{if .Station.LastPath}}<div><span class="eyebrow">Path</span>{{.Station.LastPath}}</div>{{end}}
+    {{if .Station.LastPath}}<div><span class="eyebrow">Path</span>
+      {{if .PathSummary}}<span class="path-chain">{{range $i, $h := .PathSummary.Hops}}{{if $i}}<span class="path-sep">,</span>{{end}}<span class="hop{{if $h.IsQConstruct}} is-q{{else if $h.Used}} is-used{{end}}">{{$h.Call}}{{if and $h.Used (not $h.IsQConstruct)}}*{{end}}</span>{{end}}</span>
+      <span class="dim hop-summary">· {{.PathSummary.HopSummary}}</span>
+      {{else}}{{.Station.LastPath}}{{end}}
+    </div>{{end}}
   </div>
   {{end}}
   {{else}}

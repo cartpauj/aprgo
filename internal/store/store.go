@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -165,14 +166,27 @@ func (s *Store) UpsertHeard(callsign string, t time.Time, path, info, dest strin
 	return tx.Commit()
 }
 
-// HeardSince returns stations seen since cutoff, newest first.
-func (s *Store) HeardSince(cutoff time.Time) ([]Station, error) {
+// HeardSince returns stations seen since cutoff, newest first. If query is
+// non-empty, the result is filtered to stations whose callsign or comment
+// contains the substring (case-insensitive).
+func (s *Store) HeardSince(cutoff time.Time, query string) ([]Station, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	rows, err := s.db.Query(`SELECT callsign, last_seen, COALESCE(last_path, ''), COALESCE(last_info, ''),
+	const base = `SELECT callsign, last_seen, COALESCE(last_path, ''), COALESCE(last_info, ''),
         COALESCE(last_dest, ''), COALESCE(last_source, ''), last_seen_rf,
         lat, lon, COALESCE(symbol, ''), COALESCE(comment, ''), pkt_count
-        FROM stations WHERE last_seen >= ? ORDER BY last_seen DESC`, cutoff.Unix())
+        FROM stations WHERE last_seen >= ?`
+	var rows *sql.Rows
+	var err error
+	if q := strings.TrimSpace(query); q != "" {
+		// SQLite LIKE is case-insensitive for ASCII by default. APRS
+		// callsigns/comments are ASCII so we don't need COLLATE NOCASE.
+		like := "%" + q + "%"
+		rows, err = s.db.Query(base+` AND (callsign LIKE ? OR comment LIKE ?) ORDER BY last_seen DESC`,
+			cutoff.Unix(), like, like)
+	} else {
+		rows, err = s.db.Query(base+` ORDER BY last_seen DESC`, cutoff.Unix())
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -187,6 +201,142 @@ func (s *Store) HeardSince(cutoff time.Time) ([]Station, error) {
 		}
 		st.LastSeen = time.Unix(ts, 0)
 		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
+// PacketCounts is a per-source-kind breakdown for the stats page.
+type PacketCounts struct {
+	RF    int64
+	IS    int64
+	TX    int64
+	Total int64
+}
+
+// CountPacketsSince returns the packet count by src_kind for everything
+// newer than `since`. Pass time.Time{} for all-time. Uses the (ts) index.
+func (s *Store) CountPacketsSince(since time.Time) (PacketCounts, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var c PacketCounts
+	var rows *sql.Rows
+	var err error
+	if since.IsZero() {
+		rows, err = s.db.Query(`SELECT COALESCE(src_kind,''), COUNT(*) FROM packets GROUP BY src_kind`)
+	} else {
+		rows, err = s.db.Query(`SELECT COALESCE(src_kind,''), COUNT(*) FROM packets WHERE ts >= ? GROUP BY src_kind`, since.Unix())
+	}
+	if err != nil {
+		return c, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		var n int64
+		if err := rows.Scan(&k, &n); err != nil {
+			return c, err
+		}
+		switch k {
+		case "RF":
+			c.RF = n
+		case "IS":
+			c.IS = n
+		case "TX":
+			c.TX = n
+		}
+		c.Total += n
+	}
+	return c, rows.Err()
+}
+
+// TopSource is one (callsign, count) pair for the "loudest stations" view.
+type TopSource struct {
+	Source string
+	Count  int64
+}
+
+// TopSourcesSince returns the `limit` sources with the most packets since
+// `since`, descending. Uses idx_packets_source_ts.
+func (s *Store) TopSourcesSince(since time.Time, limit int) ([]TopSource, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(`SELECT source, COUNT(*) AS n FROM packets WHERE ts >= ?
+		GROUP BY source ORDER BY n DESC LIMIT ?`, since.Unix(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TopSource
+	for rows.Next() {
+		var t TopSource
+		if err := rows.Scan(&t.Source, &t.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// StorageStats summarizes the packets table for the /stats storage section.
+type StorageStats struct {
+	TotalPackets int64
+	OldestTime   time.Time // zero if no rows
+	NewestTime   time.Time
+}
+
+// PacketStorageStats reports total row count plus oldest/newest timestamps.
+func (s *Store) PacketStorageStats() (StorageStats, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var ss StorageStats
+	var oldest, newest int64
+	if err := s.db.QueryRow(`SELECT COUNT(*), COALESCE(MIN(ts),0), COALESCE(MAX(ts),0) FROM packets`).
+		Scan(&ss.TotalPackets, &oldest, &newest); err != nil {
+		return ss, err
+	}
+	if oldest != 0 {
+		ss.OldestTime = time.Unix(oldest, 0)
+	}
+	if newest != 0 {
+		ss.NewestTime = time.Unix(newest, 0)
+	}
+	return ss, nil
+}
+
+// SearchMessages returns up to `limit` messages whose body contains `query`
+// (case-insensitive substring), newest first. Used by the unified search on
+// the stations page so an operator can find any message that mentioned a
+// callsign, frequency, weather code, etc.
+func (s *Store) SearchMessages(query string, limit int) ([]Message, error) {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(`SELECT id, ts, source, dest, msg_id, body, direction, acked
+		FROM messages WHERE body LIKE ? ORDER BY ts DESC LIMIT ?`, "%"+q+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Message
+	for rows.Next() {
+		var m Message
+		var ts int64
+		var acked int
+		if err := rows.Scan(&m.ID, &ts, &m.Source, &m.Dest, &m.MsgID, &m.Body, &m.Direction, &acked); err != nil {
+			return nil, err
+		}
+		m.Time = time.Unix(ts, 0)
+		m.Acked = acked != 0
+		out = append(out, m)
 	}
 	return out, rows.Err()
 }

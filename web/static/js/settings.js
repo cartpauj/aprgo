@@ -186,3 +186,44 @@
     );
   }
 })();
+
+// ─── APRS-IS server region picker ────────────────────────────────────────
+// The text input (id "is-server-custom") still carries the submitted value;
+// the select (id "is-server-region") is presentation-only. On page load, if
+// the saved host matches a known regional rotate, snap the select to it and
+// hide the text input. Otherwise show the text input with "Custom…" selected.
+(function () {
+  var sel = document.getElementById("is-server-region");
+  var txt = document.getElementById("is-server-custom");
+  if (!sel || !txt) return; // section not rendered (offline mode)
+
+  function setCustomVisible(show) {
+    txt.style.display = show ? "" : "none";
+  }
+
+  var current = txt.value.trim();
+  var matched = false;
+  for (var i = 0; i < sel.options.length; i++) {
+    if (sel.options[i].value === current) {
+      sel.value = current;
+      matched = true;
+      break;
+    }
+  }
+  if (matched) {
+    setCustomVisible(false);
+  } else {
+    sel.value = "custom";
+    setCustomVisible(true);
+  }
+
+  sel.addEventListener("change", function () {
+    if (sel.value === "custom") {
+      setCustomVisible(true);
+      txt.focus();
+    } else {
+      txt.value = sel.value;
+      setCustomVisible(false);
+    }
+  });
+})();

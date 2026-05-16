@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"io/fs"
 	"log"
+	"math"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -92,6 +93,9 @@ type Server struct {
 	// Per-source rate limiter for gating/digipeating decisions — drops
 	// over-rate sources so a misbehaving station doesn't get amplified.
 	srcLimiter *sourceRateLimiter
+
+	// In-memory counters surfaced on /stats.
+	stats *statsCounters
 }
 
 type staticAsset struct {
@@ -172,8 +176,12 @@ func New(opts Options) (*Server, error) {
 		retries:    newRetryQueue(),
 		viscous:    newViscousQueue(),
 		drops:      newDropRing(),
-		// aprx defaults: 6/min sustained, 60/min absolute ceiling per source.
-		srcLimiter: newSourceRateLimiter(6, 60),
+		// Per-source rate limit: >30 packets in any 60-second window puts
+		// that source in a 15-minute timeout. Designed to silence broken
+		// transmitters (stuck PTT, runaway tracker) rather than shape
+		// polite traffic — normal stations rarely exceed 5/min.
+		srcLimiter: newSourceRateLimiter(30, 15*time.Minute),
+		stats:      newStatsCounters(),
 	}
 	s.is = igate.New(st, b)
 	s.beacon = beacon.New(st, s.rf, b)
@@ -300,6 +308,14 @@ func (s *Server) parseLoop(ctx context.Context) {
 			}
 			pkt := aprs.Parse(f)
 			snap := s.state.Snapshot()
+			switch pkt.Frame.Origin {
+			case ax25.SrcRF:
+				s.stats.pktsRF.Add(1)
+			case ax25.SrcIS:
+				s.stats.pktsIS.Add(1)
+			case ax25.SrcTX:
+				s.stats.pktsTX.Add(1)
+			}
 
 			// Dupe check (RF only) — drop reflections of our own transmissions
 			// and neighbor-digipeated repeats. Key is content (src + dest +
@@ -320,6 +336,42 @@ func (s *Server) parseLoop(ctx context.Context) {
 					log.Printf("digi: viscous suppressed (heard %s>%s on RF first)", pkt.Frame.Src, pkt.Frame.Dest)
 				}
 				if s.dupe.CheckAndMark(key) {
+					s.stats.dupesDropped.Add(1)
+					continue
+				}
+				// Sanity drop: positions impossibly far from our station are
+				// almost always misconfigured trackers (e.g. AnyTone radios
+				// beaconing the Guangzhou factory test coordinates until GPS
+				// locks). We drop the entire packet — not just the position —
+				// so it doesn't pollute the dashboard, heard list, or history.
+				// Only applies when both positions are known.
+				if (snap.Lat != 0 || snap.Lon != 0) &&
+					pkt.Decoded.Lat != nil && pkt.Decoded.Lon != nil &&
+					pkt.Decoded.MsgOrigSrc == "" {
+					if haversineKm(*pkt.Decoded.Lat, *pkt.Decoded.Lon, snap.Lat, snap.Lon) > maxIntakeDistKm {
+						s.stats.distDropped.Add(1)
+						continue
+					}
+				}
+				// Per-source rate limit (RF only — IS-origin is filtered
+				// upstream by the APRS-IS server). Runs before any storage
+				// or dashboard append so a broken transmitter doesn't
+				// pollute the heard list, packets table, or live feed.
+				// Emits a one-shot diagnostic entry on the packet that
+				// trips the threshold; subsequent dropped packets while
+				// blocked are silent.
+				if ok, justBlocked := s.srcLimiter.Allow(pkt.Frame.Src); !ok {
+					if justBlocked {
+						s.stats.rateLimited.Add(1)
+						s.drops.add(dropEntry{
+							Time:   time.Now(),
+							Origin: originLabel(pkt.Frame.Origin),
+							Source: pkt.Frame.Src,
+							Dest:   pkt.Frame.Dest,
+							Info:   sanitizeInfo(pkt.Frame.Info),
+							Reason: "rate-limited (>30/min, 15-min timeout)",
+						})
+					}
 					continue
 				}
 			}
@@ -513,18 +565,13 @@ func (s *Server) parseLoop(ctx context.Context) {
 			heardOnRF := func(call string) bool {
 				return s.store.HeardOnRF(call, time.Now().Add(-2*time.Hour))
 			}
-			// Per-source rate limit: a misbehaving station beaconing every few
-			// seconds is dropped here, not amplified through gate/digi. Only
-			// applies to RF-origin frames; IS-origin already comes filtered
-			// from the APRS-IS server.
-			if pkt.Frame.Origin == ax25.SrcRF && !s.srcLimiter.Allow(pkt.Frame.Src) {
-				continue
-			}
 			for _, a := range gate.Decide(pkt, snap, heardOnRF) {
 				switch a.Kind {
 				case gate.SendIS:
 					if err := s.is.Send(a.Payload); err != nil {
 						log.Printf("gate: SendIS failed: %v", err)
+					} else {
+						s.stats.sentIS.Add(1)
 					}
 				case gate.SendRF:
 					if a.Viscous {
@@ -534,9 +581,14 @@ func (s *Server) parseLoop(ctx context.Context) {
 					} else if err := s.dispatchSendRF(a); err != nil {
 						log.Printf("gate: SendRF failed: %v (%s)", err, a.Reason)
 					} else {
+						s.stats.sentRF.Add(1)
+						if strings.HasPrefix(a.Reason, "digi ") || strings.HasPrefix(a.Reason, "preempt") {
+							s.stats.digipeats.Add(1)
+						}
 						log.Printf("gate: TX %s", a.Reason)
 					}
 				case gate.Drop:
+					s.stats.recordDropReason(a.Reason)
 					s.drops.add(dropEntry{
 						Time:   time.Now(),
 						Origin: originLabel(pkt.Frame.Origin),
@@ -874,6 +926,59 @@ var funcMap = template.FuncMap{
 		}
 		return a / b
 	},
+	"float": func(n int) float64 { return float64(n) },
+	"divf": func(a, b float64) float64 {
+		if b == 0 {
+			return 0
+		}
+		return a / b
+	},
+	"dur": func(d time.Duration) string {
+		d = d.Round(time.Second)
+		days := int(d / (24 * time.Hour))
+		d -= time.Duration(days) * 24 * time.Hour
+		hours := int(d / time.Hour)
+		d -= time.Duration(hours) * time.Hour
+		mins := int(d / time.Minute)
+		switch {
+		case days > 0:
+			return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+		case hours > 0:
+			return fmt.Sprintf("%dh %dm", hours, mins)
+		default:
+			return fmt.Sprintf("%dm", mins)
+		}
+	},
+	"comma": func(n any) string {
+		var v int64
+		switch x := n.(type) {
+		case int:
+			v = int64(x)
+		case int64:
+			v = x
+		case uint64:
+			v = int64(x)
+		default:
+			return fmt.Sprint(n)
+		}
+		s := fmt.Sprintf("%d", v)
+		neg := false
+		if v < 0 {
+			neg = true
+			s = s[1:]
+		}
+		var b strings.Builder
+		for i, c := range s {
+			if i > 0 && (len(s)-i)%3 == 0 {
+				b.WriteByte(',')
+			}
+			b.WriteRune(c)
+		}
+		if neg {
+			return "-" + b.String()
+		}
+		return b.String()
+	},
 	"oneOf": func(v string, opts ...string) bool {
 		for _, o := range opts {
 			if v == o {
@@ -925,3 +1030,25 @@ var funcMap = template.FuncMap{
 		return template.HTML(html)
 	},
 }
+
+// maxIntakeDistKm is the great-circle distance beyond which an inbound RF
+// packet's claimed position is considered bogus (almost always a
+// misconfigured tracker — e.g. AnyTone radios beacon the Guangzhou factory
+// coordinates 23N/113E until GPS acquires). The packet is dropped entirely.
+// No setting: 500 km comfortably exceeds any plausible RF reception range
+// (typical APRS is <200 km even with terrain-favorable paths).
+const maxIntakeDistKm = 500.0
+
+// haversineKm returns the great-circle distance in km between two lat/lon
+// pairs (degrees). Accurate enough for the 500 km sanity check; no need
+// for the more expensive Vincenty formulation.
+func haversineKm(lat1, lon1, lat2, lon2 float64) float64 {
+	const R = 6371.0
+	rad := math.Pi / 180
+	dLat := (lat2 - lat1) * rad
+	dLon := (lon2 - lon1) * rad
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(lat1*rad)*math.Cos(lat2*rad)*math.Sin(dLon/2)*math.Sin(dLon/2)
+	return R * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+}
+

@@ -56,6 +56,7 @@ func (s *Server) routes() http.Handler {
 	a.HandleFunc("/settings/password", s.handleChangePassword)
 	a.HandleFunc("/diagnostics", s.handleDiagnostics)
 	a.HandleFunc("/diagnostics/rows", s.handleDiagnosticsRows)
+	a.HandleFunc("/stats", s.handleStats)
 	// Wizard routes
 	a.HandleFunc("/setup", s.wizardStart)
 	a.HandleFunc("/setup/", s.wizardRouter)
@@ -194,20 +195,60 @@ func (s *Server) renderPacketHTML(pkt aprs.Packet) string {
 	if dirClass == "" {
 		dirClass = "rx"
 	}
-	pathPart := ""
-	if len(pkt.Frame.Path) > 0 {
-		pathPart = ` <span class="path">via ` + html.EscapeString(strings.Join(pkt.Frame.Path, ",")) + `</span>`
-	}
+	pathPart := renderPathHTML(strings.Join(pkt.Frame.Path, ","))
 	parsedInfo := parsedInfoHTML(pkt)
 	rawInfo := html.EscapeString(string(pkt.Frame.Info))
 	srcLink := fmt.Sprintf(`<a class="src" href="/stations/%s">%s</a>`,
 		html.EscapeString(pkt.Frame.Src), html.EscapeString(pkt.Frame.Src))
+	// Device chip — derived from the AX.25 dest tocall via the embedded
+	// aprs-deviceid registry. Empty when we don't have a match.
+	devChip := ""
+	if dev := aprs.LookupDevice(pkt.Frame.Dest); dev.Model != "" || dev.Vendor != "" {
+		devChip = fmt.Sprintf(` <span class="dev-chip" title="%s">%s</span>`,
+			html.EscapeString(dev.Tocall), html.EscapeString(dev.Display()))
+	}
 	return fmt.Sprintf(
-		`<div class="pkt %s"><span class="t">%s</span> <span class="dir %s">%s</span> %s&gt;<span class="dst">%s</span>%s <span class="info-parsed">%s</span><span class="info-raw">%s</span></div>`,
+		`<div class="pkt %s"><span class="t">%s</span> <span class="dir %s">%s</span> %s&gt;<span class="dst">%s</span>%s%s <span class="info-parsed">%s</span><span class="info-raw">%s</span></div>`,
 		dirClass, ts, dirClass, dirLabel,
 		srcLink, html.EscapeString(pkt.Frame.Dest),
-		pathPart, parsedInfo, rawInfo,
+		devChip, pathPart, parsedInfo, rawInfo,
 	)
+}
+
+// renderPathHTML beautifies a comma-joined path into a hop chain: used hops
+// (digi*) get an "is-used" class for accent-color rendering; q-construct
+// hops (qAR + iGate call) get a separate "is-q" class. Empty input returns
+// an empty fragment.
+func renderPathHTML(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	p := aprs.ParsePath(raw)
+	if len(p.Hops) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(` <span class="path">via `)
+	for i, h := range p.Hops {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		cls := "hop"
+		switch {
+		case h.IsQConstruct:
+			cls = "hop is-q"
+		case h.Used:
+			cls = "hop is-used"
+		}
+		marker := ""
+		if h.Used && !h.IsQConstruct {
+			marker = "*"
+		}
+		fmt.Fprintf(&b, `<span class="%s">%s%s</span>`,
+			cls, html.EscapeString(h.Call), marker)
+	}
+	b.WriteString(`</span>`)
+	return b.String()
 }
 
 func parsedInfoHTML(pkt aprs.Packet) string {
@@ -239,6 +280,18 @@ func parsedInfoHTML(pkt aprs.Packet) string {
 	}
 	if d.Status != "" {
 		fmt.Fprintf(&b, ` <span class="status">[%s]</span>`, html.EscapeString(d.Status))
+		wrote = true
+	}
+	if d.Weather != nil {
+		fmt.Fprintf(&b, ` <span class="wx">%s</span>`, weatherInlineHTML(d.Weather))
+		wrote = true
+	}
+	if d.PHG != nil {
+		fmt.Fprintf(&b, ` <span class="phg">%s</span>`, html.EscapeString(phgInline(d.PHG)))
+		wrote = true
+	}
+	if d.RNG != nil {
+		fmt.Fprintf(&b, ` <span class="phg">~%d mi range</span>`, d.RNG.Miles)
 		wrote = true
 	}
 	if d.Comment != "" {
@@ -283,6 +336,46 @@ func parsedInfoHTML(pkt aprs.Packet) string {
 		return b.String()
 	}
 	return html.EscapeString(string(pkt.Frame.Info))
+}
+
+// weatherText renders a compact one-line weather summary in plain text.
+func weatherText(w *aprs.Weather) string {
+	var parts []string
+	if w.TempSet {
+		parts = append(parts, fmt.Sprintf("%d°F", w.TempF))
+	}
+	if w.WindDirSet && w.WindSpeedSet {
+		wind := fmt.Sprintf("%d mph %d°", w.WindSpeedMPH, w.WindDirDeg)
+		if w.WindGustSet && w.WindGustMPH > w.WindSpeedMPH {
+			wind += fmt.Sprintf(" (g%d)", w.WindGustMPH)
+		}
+		parts = append(parts, wind)
+	}
+	if w.HumiditySet {
+		parts = append(parts, fmt.Sprintf("%d%% RH", w.HumidityPct))
+	}
+	if w.PressureSet {
+		parts = append(parts, fmt.Sprintf("%.1f mb", float64(w.PressureTenthMb)/10.0))
+	}
+	if w.Rain1hSet && w.Rain1hHundIn > 0 {
+		parts = append(parts, fmt.Sprintf("%.2f\"/h", float64(w.Rain1hHundIn)/100.0))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// weatherInlineHTML is weatherText with HTML escaping for the live feed.
+func weatherInlineHTML(w *aprs.Weather) string {
+	return html.EscapeString(weatherText(w))
+}
+
+// phgInline renders a single-line PHG summary suitable for the live feed.
+func phgInline(p *aprs.PHG) string {
+	dir := "omni"
+	if !p.Omni {
+		dir = fmt.Sprintf("%d°", p.DirDeg)
+	}
+	return fmt.Sprintf("%dW · %dft · %ddB %s · ~%.0f mi",
+		p.PowerW, p.HeightFt, p.GainDB, dir, p.RangeMiles)
 }
 
 func (s *Server) handleMap(w http.ResponseWriter, r *http.Request) {
@@ -416,7 +509,7 @@ func (s *Server) apiStations(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	cutoff := time.Now().Add(-time.Duration(minutes) * time.Minute)
-	list, err := s.store.HeardSince(cutoff)
+	list, err := s.store.HeardSince(cutoff, "")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -438,6 +531,17 @@ func (s *Server) apiStations(w http.ResponseWriter, r *http.Request) {
 		Course     int     `json:"course,omitempty"`
 		Frequency  string  `json:"frequency,omitempty"`
 		Status     string  `json:"status,omitempty"`
+		// Parsed extras for the map popup. All omitempty so old packets
+		// that lack these fields don't bloat the JSON.
+		DeviceName  string  `json:"device,omitempty"`
+		DeviceTocall string `json:"device_tocall,omitempty"`
+		WxSummary   string  `json:"wx,omitempty"`
+		PHGSummary  string  `json:"phg,omitempty"`
+		PHGRange    int     `json:"phg_range_mi,omitempty"`
+		RNGRange    int     `json:"rng_mi,omitempty"`
+		HopSummary  string  `json:"hops,omitempty"`
+		QConstruct  string  `json:"q,omitempty"`
+		IGate       string  `json:"igate,omitempty"`
 	}
 	out := make([]stationOut, 0, len(list))
 	for _, st := range list {
@@ -462,6 +566,26 @@ func (s *Server) apiStations(w http.ResponseWriter, r *http.Request) {
 		}
 		o.Frequency = dec.Frequency
 		o.Status = dec.Status
+		if dev := aprs.LookupDevice(st.LastDest); dev.Model != "" || dev.Vendor != "" {
+			o.DeviceName = dev.Display()
+			o.DeviceTocall = dev.Tocall
+		}
+		if dec.Weather != nil {
+			o.WxSummary = weatherText(dec.Weather)
+		}
+		if dec.PHG != nil {
+			o.PHGSummary = phgInline(dec.PHG)
+			o.PHGRange = int(dec.PHG.RangeMiles + 0.5)
+		}
+		if dec.RNG != nil {
+			o.RNGRange = dec.RNG.Miles
+		}
+		if st.LastPath != "" {
+			ps := aprs.ParsePath(st.LastPath)
+			o.HopSummary = ps.HopSummary()
+			o.QConstruct = ps.QConstruct
+			o.IGate = ps.IGateCall
+		}
 		out = append(out, o)
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -497,7 +621,7 @@ func (s *Server) handleStationDetail(w http.ResponseWriter, r *http.Request) {
 		// fall through to the shared packet-history rendering below.
 	}
 
-	stations, _ := s.store.HeardSince(time.Now().Add(-30 * 24 * time.Hour))
+	stations, _ := s.store.HeardSince(time.Now().Add(-30*24*time.Hour), "")
 	var st *store.Station
 	for i := range stations {
 		if strings.EqualFold(stations[i].Callsign, call) {
@@ -527,14 +651,80 @@ func (s *Server) handleStationDetail(w http.ResponseWriter, r *http.Request) {
 	data["Station"] = st
 	data["RenderedPackets"] = rendered
 	data["PacketCount"] = len(packets)
+	// Decode the most recently heard packet's info field to surface rich
+	// parsed fields (weather, PHG, RNG) on the station detail page.
+	// Device ID comes from the AX.25 dest tocall; lookup is cheap.
+	if st != nil {
+		if st.LastDest != "" {
+			if dev := aprs.LookupDevice(st.LastDest); dev.Model != "" || dev.Vendor != "" {
+				data["Device"] = dev
+			}
+		}
+		if st.LastInfo != "" {
+			dec := aprs.Decode(st.LastInfo, st.LastDest)
+			if dec.Weather != nil {
+				data["Weather"] = dec.Weather
+			}
+			if dec.PHG != nil {
+				data["PHG"] = dec.PHG
+			}
+			if dec.RNG != nil {
+				data["RNG"] = dec.RNG
+			}
+		}
+		if st.LastPath != "" {
+			data["PathSummary"] = aprs.ParsePath(st.LastPath)
+		}
+	}
 	s.render(w, "station_detail.html", data)
 }
 
+// stationsWindowOptions defines the time-range chips on the stations page,
+// mirroring the map page's lookback dropdown.
+var stationsWindowOptions = []struct {
+	Value string
+	Label string
+	Dur   time.Duration
+}{
+	{"1h", "1 hour", 1 * time.Hour},
+	{"24h", "24 hours", 24 * time.Hour},
+	{"7d", "7 days", 7 * 24 * time.Hour},
+	{"30d", "30 days", 30 * 24 * time.Hour},
+}
+
 func (s *Server) handleStations(w http.ResponseWriter, r *http.Request) {
-	cutoff := time.Now().Add(-24 * time.Hour)
-	list, _ := s.store.HeardSince(cutoff)
+	window := r.URL.Query().Get("window")
+	dur := 24 * time.Hour
+	matched := "24h"
+	for _, w := range stationsWindowOptions {
+		if w.Value == window {
+			dur = w.Dur
+			matched = w.Value
+			break
+		}
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if len(query) > 64 {
+		query = query[:64]
+	}
+
+	cutoff := time.Now().Add(-dur)
+	list, _ := s.store.HeardSince(cutoff, query)
+	blockedMap := make(map[string]bool)
+	for _, b := range s.srcLimiter.BlockedSources() {
+		blockedMap[b.Source] = true
+	}
+	var msgMatches []store.Message
+	if query != "" {
+		msgMatches, _ = s.store.SearchMessages(query, 50)
+	}
 	data := s.common("Stations", r)
 	data["Stations"] = list
+	data["BlockedSrcs"] = blockedMap
+	data["Window"] = matched
+	data["WindowOptions"] = stationsWindowOptions
+	data["Query"] = query
+	data["MessageMatches"] = msgMatches
 	s.render(w, "stations.html", data)
 }
 
@@ -806,6 +996,7 @@ func (s *Server) handleMessageSend(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	data := s.common("Diagnostics", r)
 	data["Drops"] = s.drops.snapshot()
+	data["Blocked"] = s.srcLimiter.BlockedSources()
 	s.render(w, "diagnostics.html", data)
 }
 
@@ -814,6 +1005,7 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDiagnosticsRows(w http.ResponseWriter, r *http.Request) {
 	data := s.common("Diagnostics", r)
 	data["Drops"] = s.drops.snapshot()
+	data["Blocked"] = s.srcLimiter.BlockedSources()
 	renderFragment(w, r, s.tmpl, "diagRows", data)
 }
 
@@ -956,4 +1148,44 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	flash(w, true, "Password updated.")
+}
+
+// handleStats renders the operator stats summary: at-a-glance counters,
+// time-windowed packet activity, top sources, top drop reasons, queue
+// depths, and storage info.
+func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
+	c1h, _ := s.store.CountPacketsSince(now.Add(-1 * time.Hour))
+	c24h, _ := s.store.CountPacketsSince(now.Add(-24 * time.Hour))
+	c7d, _ := s.store.CountPacketsSince(now.Add(-7 * 24 * time.Hour))
+	cAll, _ := s.store.CountPacketsSince(time.Time{})
+	top24, _ := s.store.TopSourcesSince(now.Add(-24*time.Hour), 10)
+	storage, _ := s.store.PacketStorageStats()
+
+	snap := s.state.Snapshot()
+	data := s.common("Stats", r)
+	data["Uptime"] = now.Sub(s.stats.startedAt)
+	data["StartedAt"] = s.stats.startedAt
+	data["PktsRF"] = s.stats.pktsRF.Load()
+	data["PktsIS"] = s.stats.pktsIS.Load()
+	data["PktsTX"] = s.stats.pktsTX.Load()
+	data["SentIS"] = s.stats.sentIS.Load()
+	data["SentRF"] = s.stats.sentRF.Load()
+	data["Digipeats"] = s.stats.digipeats.Load()
+	data["DropsTotal"] = s.stats.dropsTotal.Load()
+	data["RateLimited"] = s.stats.rateLimited.Load()
+	data["DistDropped"] = s.stats.distDropped.Load()
+	data["DupesDropped"] = s.stats.dupesDropped.Load()
+	data["TopDropReasons"] = s.stats.TopDropReasons(8)
+	data["Count1h"] = c1h
+	data["Count24h"] = c24h
+	data["Count7d"] = c7d
+	data["CountAll"] = cAll
+	data["TopSources24h"] = top24
+	data["Storage"] = storage
+	data["RFConnected"] = s.rf.Connected()
+	data["ISConnected"] = s.is.Connected()
+	data["BlockedCount"] = len(s.srcLimiter.BlockedSources())
+	data["RetentionDays"] = snap.RetentionDays
+	s.render(w, "stats.html", data)
 }

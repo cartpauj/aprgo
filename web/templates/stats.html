@@ -1,0 +1,102 @@
+{{define "stats.html"}}{{template "header" .}}
+<section class="stats-page">
+  {{template "pageHead" (dict
+    "Eyebrow" "Operational summary"
+    "Title"   "Stats"
+    "Lede"    "Aggregated counters and storage details. Session counters reset on restart; time-windowed packet counts come from the database.")}}
+
+  <!-- Top: at-a-glance grid -->
+  <div class="stats-grid">
+    <div class="stats-card">
+      <div class="eyebrow">Uptime</div>
+      <div class="stats-big">{{dur .Uptime}}</div>
+      <div class="stats-sub">since {{.StartedAt.Format "2006-01-02 15:04"}}</div>
+    </div>
+    <div class="stats-card">
+      <div class="eyebrow">RF connection</div>
+      <div class="stats-big">{{if .RFConnected}}<span class="status-ok">● live</span>{{else}}<span class="status-err">○ down</span>{{end}}</div>
+      <div class="stats-sub">{{comma .PktsRF}} RF packets parsed</div>
+    </div>
+    <div class="stats-card">
+      <div class="eyebrow">APRS-IS</div>
+      <div class="stats-big">{{if .ISConnected}}<span class="status-ok">● live</span>{{else}}<span class="status-err">○ down</span>{{end}}</div>
+      <div class="stats-sub">{{comma .PktsIS}} IS packets parsed</div>
+    </div>
+    <div class="stats-card">
+      <div class="eyebrow">Our TX</div>
+      <div class="stats-big">{{comma .PktsTX}}</div>
+      <div class="stats-sub">beacons + gates + digipeats observed on the bus</div>
+    </div>
+  </div>
+
+  <!-- Gate decisions -->
+  <h2 class="stats-h2">Gate decisions (this session)</h2>
+  <div class="stats-grid">
+    <div class="stats-card"><div class="eyebrow">RF → IS gated</div><div class="stats-big">{{comma .SentIS}}</div></div>
+    <div class="stats-card"><div class="eyebrow">IS → RF + digipeats</div><div class="stats-big">{{comma .SentRF}}</div><div class="stats-sub">{{comma .Digipeats}} were digipeats</div></div>
+    <div class="stats-card"><div class="eyebrow">Total drops</div><div class="stats-big">{{comma .DropsTotal}}</div></div>
+    <div class="stats-card"><div class="eyebrow">Intake guards</div>
+      <div class="stats-sub"><span class="mono-num">{{comma .DupesDropped}}</span> dupes</div>
+      <div class="stats-sub"><span class="mono-num">{{comma .DistDropped}}</span> &gt;500 km bogus positions</div>
+      <div class="stats-sub"><span class="mono-num">{{comma .RateLimited}}</span> rate-limit trips ({{.BlockedCount}} active)</div>
+    </div>
+  </div>
+
+  <!-- Time-windowed packet activity -->
+  <h2 class="stats-h2">Packet activity (from DB)</h2>
+  <table class="data-table stats-counts">
+    <thead>
+      <tr><th>Window</th><th class="col-num">RF</th><th class="col-num">IS</th><th class="col-num">TX</th><th class="col-num">Total</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Last hour</td><td class="col-num mono-num">{{comma .Count1h.RF}}</td><td class="col-num mono-num">{{comma .Count1h.IS}}</td><td class="col-num mono-num">{{comma .Count1h.TX}}</td><td class="col-num mono-num">{{comma .Count1h.Total}}</td></tr>
+      <tr><td>Last 24 hours</td><td class="col-num mono-num">{{comma .Count24h.RF}}</td><td class="col-num mono-num">{{comma .Count24h.IS}}</td><td class="col-num mono-num">{{comma .Count24h.TX}}</td><td class="col-num mono-num">{{comma .Count24h.Total}}</td></tr>
+      <tr><td>Last 7 days</td><td class="col-num mono-num">{{comma .Count7d.RF}}</td><td class="col-num mono-num">{{comma .Count7d.IS}}</td><td class="col-num mono-num">{{comma .Count7d.TX}}</td><td class="col-num mono-num">{{comma .Count7d.Total}}</td></tr>
+      <tr><td>All time</td><td class="col-num mono-num">{{comma .CountAll.RF}}</td><td class="col-num mono-num">{{comma .CountAll.IS}}</td><td class="col-num mono-num">{{comma .CountAll.TX}}</td><td class="col-num mono-num">{{comma .CountAll.Total}}</td></tr>
+    </tbody>
+  </table>
+
+  <!-- Top sources & top drop reasons side by side -->
+  <div class="stats-two-col">
+    <div>
+      <h2 class="stats-h2">Top sources (last 24 h)</h2>
+      {{if .TopSources24h}}
+      <table class="data-table">
+        <thead><tr><th>Source</th><th class="col-num">Packets</th></tr></thead>
+        <tbody>
+          {{range .TopSources24h}}
+          <tr><td class="col-call"><a href="/stations/{{.Source}}">{{.Source}}</a></td><td class="col-num mono-num">{{comma .Count}}</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{else}}
+      <p class="dim">No packets logged in the last 24 h.</p>
+      {{end}}
+    </div>
+    <div>
+      <h2 class="stats-h2">Top drop reasons (this session)</h2>
+      {{if .TopDropReasons}}
+      <table class="data-table">
+        <thead><tr><th>Reason</th><th class="col-num">Count</th></tr></thead>
+        <tbody>
+          {{range .TopDropReasons}}
+          <tr><td>{{.Reason}}</td><td class="col-num mono-num">{{comma .Count}}</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{else}}
+      <p class="dim">No gate drops recorded yet.</p>
+      {{end}}
+    </div>
+  </div>
+
+  <!-- Storage -->
+  <h2 class="stats-h2">Storage</h2>
+  <div class="stats-grid">
+    <div class="stats-card"><div class="eyebrow">Packets stored</div><div class="stats-big">{{comma .Storage.TotalPackets}}</div></div>
+    <div class="stats-card"><div class="eyebrow">Retention</div><div class="stats-big">{{.RetentionDays}}d</div><div class="stats-sub">rows older than this are pruned</div></div>
+    <div class="stats-card"><div class="eyebrow">Oldest packet</div><div class="stats-big">{{if .Storage.OldestTime.IsZero}}—{{else}}{{ago .Storage.OldestTime}} ago{{end}}</div></div>
+    <div class="stats-card"><div class="eyebrow">Newest packet</div><div class="stats-big">{{if .Storage.NewestTime.IsZero}}—{{else}}{{ago .Storage.NewestTime}} ago{{end}}</div></div>
+  </div>
+</section>
+{{template "footer" .}}{{end}}

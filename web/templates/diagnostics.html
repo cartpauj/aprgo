@@ -10,10 +10,21 @@
 {{template "footer" .}}{{end}}
 
 {{define "diagRows"}}
-<table class="data-table diag"
-       hx-get="/diagnostics/rows"
-       hx-trigger="every 5s"
-       hx-swap="outerHTML">
+<div class="diag-wrap"
+     hx-get="/diagnostics/rows"
+     hx-trigger="every 5s"
+     hx-swap="outerHTML">
+  {{if .Blocked}}
+  <div class="diag-blocked">
+    <div class="eyebrow">Currently rate-limited</div>
+    <ul class="diag-blocked-list">
+      {{range .Blocked}}
+      <li><a href="/stations/{{.Source}}"><code>{{.Source}}</code></a> — block expires <time class="rel-time" data-ts="{{unix .BlockedUntil}}" title="{{.BlockedUntil.Format "2006-01-02 15:04:05"}}"></time></li>
+      {{end}}
+    </ul>
+  </div>
+  {{end}}
+<table class="data-table diag">
   <thead>
     <tr>
       <th>When</th>
@@ -46,4 +57,5 @@
     {{end}}
   </tbody>
 </table>
+</div>
 {{end}}

@@ -245,7 +245,8 @@ func (s *Server) wizardSave(w http.ResponseWriter, r *http.Request) {
 		}
 	case "tnc":
 		kindPath := r.FormValue("kind_path")
-		tcpAddr := strings.TrimSpace(r.FormValue("tcp_addr"))
+		tcpHost := strings.TrimSpace(r.FormValue("tcp_host"))
+		tcpPort := strings.TrimSpace(r.FormValue("tcp_port"))
 		switch {
 		case strings.HasPrefix(kindPath, "serial::"):
 			d.Draft.TNCKind = state.TNCSerial
@@ -259,12 +260,15 @@ func (s *Server) wizardSave(w http.ResponseWriter, r *http.Request) {
 			s.startBTPair(w, r, addr)
 			return
 		case strings.HasPrefix(kindPath, "tcp::"):
-			if tcpAddr == "" {
-				flash(w, false, "host:port required")
+			if tcpHost == "" {
+				flash(w, false, "TCP host required")
 				return
 			}
+			if tcpPort == "" {
+				tcpPort = "8001"
+			}
 			d.Draft.TNCKind = state.TNCTCP
-			d.Draft.TNCAddr = tcpAddr
+			d.Draft.TNCAddr = tcpHost + ":" + tcpPort
 			d.Draft.TNCSerial = ""
 		}
 	case "mode":
@@ -423,6 +427,9 @@ func (s *Server) renderStep(w http.ResponseWriter, r *http.Request, d *wizardDra
 		paired, _ := tnc.Paired(ctx)
 		data["Serials"] = serials
 		data["BTPaired"] = paired
+		host, port := splitTNCHostPort(d.Draft.TNCAddr)
+		data["TNCHost"] = host
+		data["TNCPort"] = port
 	case "beacon":
 		_, cmt, _ := beaconDefaultsFor(d.Draft.Mode)
 		data["BeaconCommentDefault"] = cmt
@@ -638,6 +645,28 @@ func wizardStepHelp(key string) string {
 		return "All set."
 	}
 	return ""
+}
+
+// splitTNCHostPort splits a stored TNCAddr ("host:port") into its parts for
+// pre-filling the wizard's separate host + port fields. Splits on the LAST
+// colon so IPv6 literals like "[::1]:8001" still split correctly. Returns
+// ("", "8001") for an empty addr — 8001 is the Direwolf / tnc-server / WiFi
+// TNC convention and the right default for a fresh setup.
+func splitTNCHostPort(addr string) (host, port string) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return "", "8001"
+	}
+	idx := strings.LastIndex(addr, ":")
+	if idx < 0 {
+		return addr, "8001"
+	}
+	host = addr[:idx]
+	port = addr[idx+1:]
+	if port == "" {
+		port = "8001"
+	}
+	return host, port
 }
 
 // filterRadiusFromIS parses the trailing km from an APRS-IS server filter
