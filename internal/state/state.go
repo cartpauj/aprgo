@@ -68,6 +68,16 @@ type Beacon struct {
 	// operator wants to run a separate SSID per beacon role
 	// (e.g. N0CALL-10 for the iGate, N0CALL-1 for a weather beacon).
 	Callsign string `json:"callsign,omitempty"`
+	// AmbiguityLevel blanks the trailing digits of the broadcast position
+	// for privacy, per APRS spec §6 (uncompressed position).
+	//   0 = full precision (default)         — ~18 m at the equator
+	//   1 = blank hundredths-of-minute       — ~185 m
+	//   2 = blank all decimal minutes        — ~1.8 km
+	//   3 = also blank units of minutes      — ~18 km
+	//   4 = also blank tens of minutes       — ~111 km (degree-level)
+	// Receivers interpret blanked digits as "unknown" and plot the
+	// position at the midpoint of the resulting box.
+	AmbiguityLevel int `json:"ambiguity_level,omitempty"`
 }
 
 // State is the JSON-persisted blob.
@@ -386,8 +396,36 @@ func (b Beacon) ComposeInfo(lat, lon float64) string {
 	if lonMin >= 59.995 {
 		lonMin = 59.99
 	}
-	return fmt.Sprintf("%s%02d%05.2f%s%c%03d%05.2f%s%c%s",
-		posType, latDeg, latMin, latH, sym[0], lonDeg, lonMin, lonH, sym[1], b.Comment)
+	latS := fmt.Sprintf("%02d%05.2f%s", latDeg, latMin, latH)
+	lonS := fmt.Sprintf("%03d%05.2f%s", lonDeg, lonMin, lonH)
+	latS, lonS = applyAmbiguity(latS, lonS, b.AmbiguityLevel)
+	return fmt.Sprintf("%s%s%c%s%c%s", posType, latS, sym[0], lonS, sym[1], b.Comment)
+}
+
+// applyAmbiguity blanks trailing digits of the encoded lat/lon strings
+// per APRS spec §6. lat is 8 chars (DDMM.mmH), lon is 9 chars (DDDMM.mmH).
+// level is clamped to [0,4]; same level applied to both axes.
+func applyAmbiguity(lat, lon string, level int) (string, string) {
+	if level <= 0 {
+		return lat, lon
+	}
+	if level > 4 {
+		level = 4
+	}
+	if len(lat) != 8 || len(lon) != 9 {
+		return lat, lon
+	}
+	latB := []byte(lat)
+	lonB := []byte(lon)
+	// Digits to blank, from least to most significant. The '.' separator
+	// (lat[4], lon[5]) is preserved at every level.
+	latPos := [4]int{6, 5, 3, 2}
+	lonPos := [4]int{7, 6, 4, 3}
+	for i := 0; i < level; i++ {
+		latB[latPos[i]] = ' '
+		lonB[lonPos[i]] = ' '
+	}
+	return string(latB), string(lonB)
 }
 
 func (s *Store) load() error {

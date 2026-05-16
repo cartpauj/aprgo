@@ -112,8 +112,6 @@ right now — note the reason next to the item.
 
 ## Niche features (low priority)
 
-- [ ] **Position ambiguity option.** APRS allows replacing trailing digits of
-  lat/lon with spaces for privacy. Add a per-beacon "ambiguity level" (0-4).
 - [ ] **Compressed position emission.** 13 bytes vs 19. Modern decoders
   prefer compressed. Encoder per APRS spec §9.
 - [ ] **`bluetoothctl --timeout` compat fallback.** On bluez < 5.55 the flag

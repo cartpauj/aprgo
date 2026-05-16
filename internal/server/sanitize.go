@@ -114,6 +114,13 @@ func parseBeaconsForm(r interface {
 		path := r.FormValue(fmt.Sprintf("beacon_%d_path", i))
 		everyMin, _ := strconv.Atoi(r.FormValue(fmt.Sprintf("beacon_%d_every_min", i)))
 		enabled := r.FormValue(fmt.Sprintf("beacon_%d_enabled", i)) == "1"
+		ambig, _ := strconv.Atoi(r.FormValue(fmt.Sprintf("beacon_%d_ambiguity", i)))
+		if ambig < 0 {
+			ambig = 0
+		}
+		if ambig > 4 {
+			ambig = 4
+		}
 		// Optional per-beacon callsign override — empty means "use station's"
 		var beaconCall string
 		if raw := strings.TrimSpace(r.FormValue(fmt.Sprintf("beacon_%d_callsign", i))); raw != "" {
@@ -150,15 +157,16 @@ func parseBeaconsForm(r interface {
 			everyMin = 1440
 		}
 		out = append(out, state.Beacon{
-			Name:     name,
-			Symbol:   symbol,
-			Comment:  comment,
-			Messages: messages,
-			Dest:     dest,
-			Path:     validatedPath,
-			EveryS:   everyMin * 60,
-			Enabled:  enabled,
-			Callsign: beaconCall,
+			Name:           name,
+			Symbol:         symbol,
+			Comment:        comment,
+			Messages:       messages,
+			Dest:           dest,
+			Path:           validatedPath,
+			EveryS:         everyMin * 60,
+			Enabled:        enabled,
+			Callsign:       beaconCall,
+			AmbiguityLevel: ambig,
 		})
 	}
 	return out, errs

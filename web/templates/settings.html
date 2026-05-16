@@ -129,6 +129,15 @@
           <label><span class="label-head">Callsign override<span class="info-tip tip-right" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Empty = use station callsign. Set only to run a beacon under a different SSID — e.g. iGate <code>N0CALL-10</code> with weather beacon <code>N0CALL-1</code>. SSID 0–15.</span></span></span>
             <input type="text" name="beacon_{{.Idx}}_callsign" value="{{.B.Callsign}}" placeholder="(uses station callsign)" pattern="[A-Za-z0-9-]*">
           </label>
+          <label><span class="label-head">Position ambiguity<span class="info-tip tip-right" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Blanks trailing digits of the broadcast position for privacy. Receivers plot the midpoint of the resulting box. <code>0</code> = full precision; <code>4</code> = degree-level (~111 km).</span></span></span>
+            <select name="beacon_{{.Idx}}_ambiguity">
+              <option value="0" {{if eq .B.AmbiguityLevel 0}}selected{{end}}>0 — full precision (~18 m)</option>
+              <option value="1" {{if eq .B.AmbiguityLevel 1}}selected{{end}}>1 — ~185 m</option>
+              <option value="2" {{if eq .B.AmbiguityLevel 2}}selected{{end}}>2 — ~1.8 km</option>
+              <option value="3" {{if eq .B.AmbiguityLevel 3}}selected{{end}}>3 — ~18 km</option>
+              <option value="4" {{if eq .B.AmbiguityLevel 4}}selected{{end}}>4 — ~111 km (degree-only)</option>
+            </select>
+          </label>
         </div>
         <div class="beacon-row-foot">
           <label class="cb"><input type="checkbox" name="beacon_{{.Idx}}_enabled" value="1" {{if .B.Enabled}}checked{{end}}> Enabled</label>
