@@ -411,11 +411,18 @@ func (s *Server) handleMap(w http.ResponseWriter, r *http.Request) {
 }
 
 // parseISFilterRadius extracts (lat, lon, km) from an APRS-IS server-side
-// filter of the form "r/<lat>/<lon>/<km>". Returns ok=false for any other
-// filter shape or malformed inputs.
+// filter that begins with "r/<lat>/<lon>/<km>" (possibly followed by
+// additional space-separated filter elements like "-t/pwntso"). Returns
+// ok=false for any other filter shape or malformed inputs.
 func parseISFilterRadius(s string) (lat, lon float64, km int, ok bool) {
 	if !strings.HasPrefix(s, "r/") {
 		return 0, 0, 0, false
+	}
+	// Take only the leading r/.../.../... segment; anything after a space
+	// is a separate filter element (e.g. "-t/pwntso") that doesn't carry
+	// radius information.
+	if sp := strings.IndexByte(s, ' '); sp >= 0 {
+		s = s[:sp]
 	}
 	parts := strings.Split(s, "/")
 	if len(parts) < 4 {

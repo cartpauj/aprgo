@@ -268,6 +268,10 @@ h3 { font-weight: 500; font-size: 0.95rem; margin: var(--gap-4) 0 var(--gap-2); 
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
 }
+/* Hamburger button — hidden on desktop; revealed at ≤640px via the
+   mobile media block below. */
+.nav-toggle { display: none; }
+.nav-logout { display: none; }
 .topbar-inner {
   max-width: 1320px;
   margin: 0 auto;
@@ -1607,6 +1611,442 @@ body.view-raw .pkt .info-raw { display: inline; }
   .topbar .logout { margin-left: 0; }
   main { padding: var(--gap-4) var(--gap-3) var(--gap-5); }
   .data-table { font-size: 0.78rem; }
+}
+
+/* ─── Mobile (≤640px) — handheld-terminal layout ──────────────────────── */
+@media (max-width: 640px) {
+
+  /* GLOBAL: every form control bumps to ≥16px font-size. iOS Safari
+     auto-zooms into any focused input whose computed font-size is less
+     than 16px — even when a more specific rule sets 16px later, edge
+     cases in Safari still trigger zoom. Forcing 16px at this level kills
+     the zoom path everywhere, not just chat. Desktop unaffected. */
+  input[type="text"], input[type="password"], input[type="number"],
+  input[type="email"], input[type="search"], input:not([type]),
+  select, textarea {
+    font-size: 16px;
+  }
+
+  /* TOPBAR + HAMBURGER NAV — desktop's inline 7-link row doesn't fit a
+     phone. Replace with a brand·toggle band, dropdown opens beneath. */
+  .topbar-inner {
+    gap: var(--gap-3);
+    padding: 10px var(--gap-3);
+    justify-content: space-between;
+  }
+  .nav-toggle {
+    display: inline-flex;
+    flex-direction: column;
+    justify-content: center;
+    width: 38px; height: 38px;
+    padding: 0;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--r-2);
+    cursor: pointer;
+  }
+  .nav-toggle:hover,
+  .nav-toggle[aria-expanded="true"] { border-color: var(--accent); }
+  .nav-toggle-bar {
+    display: block;
+    width: 18px; height: 1.5px;
+    background: var(--fg);
+    margin: 2px auto;
+    border-radius: 1px;
+    transition: transform 0.18s ease, opacity 0.18s ease, background 0.18s;
+  }
+  .nav-toggle[aria-expanded="true"] .nav-toggle-bar { background: var(--accent); }
+  .nav-toggle[aria-expanded="true"] .nav-toggle-bar:nth-child(1) { transform: translateY(5.5px) rotate(45deg); }
+  .nav-toggle[aria-expanded="true"] .nav-toggle-bar:nth-child(2) { opacity: 0; }
+  .nav-toggle[aria-expanded="true"] .nav-toggle-bar:nth-child(3) { transform: translateY(-5.5px) rotate(-45deg); }
+
+  /* Nav becomes an absolutely-positioned dropdown beneath the topbar.
+     Closed: max-height:0 + overflow:hidden so it's collapsed cleanly.
+     Open: a body.nav-open class is added by the JS toggle. */
+  .topbar nav {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: var(--bg-elev);
+    border-bottom: 1px solid var(--border);
+    box-shadow: var(--shadow-md);
+    flex-direction: column;
+    align-items: stretch;
+    flex-wrap: nowrap;
+    gap: 0;
+    margin: 0;
+    padding: 0 var(--gap-3);
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.22s ease, padding 0.22s ease;
+  }
+  body.nav-open .topbar nav {
+    max-height: 90vh;
+    padding: var(--gap-2) var(--gap-3) var(--gap-3);
+    overflow-y: auto;
+  }
+  .topbar nav a {
+    padding: 12px 14px;
+    font-size: 0.95rem;
+    font-weight: 500;
+    border-radius: var(--r-2);
+    border: 0;
+    box-shadow: none;
+  }
+  .topbar nav a[aria-current="page"] {
+    background: rgba(var(--accent-rgb), 0.12);
+    color: var(--accent);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  .topbar nav a.nav-logout {
+    display: block;
+    margin-top: 8px;
+    padding-top: 14px;
+    border-top: 1px dashed var(--border);
+    color: var(--muted);
+    font-size: 0.78rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .topbar .logout { display: none; }
+  .topbar .brand .brand-tag { display: none; }
+
+  /* SAVE BAR — slim single-row band. Earlier mistake was stacking
+     vertically + width:100% on save-actions, which ate half the
+     viewport. Mobile drops the hint copy, keeps a tight row, button
+     flush right. */
+  .save-bar {
+    padding: 10px var(--gap-3);
+    flex-direction: row;
+    align-items: center;
+    gap: var(--gap-2);
+  }
+  .save-bar .save-hint { display: none; }
+  .save-bar .save-actions {
+    width: auto;
+    margin-left: auto;
+    gap: var(--gap-2);
+    flex-shrink: 0;
+  }
+  .save-bar .save-actions .flash { padding: 5px 9px; font-size: 0.72rem; }
+  .save-bar .save-actions button.primary {
+    padding: 8px 16px;
+    font-size: 0.85rem;
+  }
+
+  /* SETTINGS SECTIONS — tighter horizontal padding so labels + inputs
+     claim more width. Numbered eyebrow gets a phosphor tint so it
+     reads as a wayfinding chip, not just dim text. */
+  .settings-section-head {
+    padding: 10px var(--gap-3);
+    gap: 2px;
+  }
+  .settings-section-head .title { font-size: 0.84rem; }
+  .settings-section-head .title .num {
+    background: rgba(var(--accent-rgb), 0.08);
+    color: var(--accent);
+    padding: 1px 6px;
+    border-radius: 2px;
+    margin-right: 6px;
+    letter-spacing: 0.08em;
+  }
+  .settings-section-head .sub { font-size: 0.74rem; line-height: 1.35; }
+  .settings-section-body { padding: var(--gap-3); }
+  .settings-section-body .row { gap: var(--gap-2); }
+
+  /* Mode-managed note + flag chips — tighter wrap. */
+  .mode-managed-note { padding: var(--gap-3); font-size: 0.82rem; }
+  .mode-flag-chips { gap: 4px; }
+  .flag-chip { padding: 2px 8px 2px 6px; font-size: 0.66rem; }
+
+  /* Beacon row foot — remove button drops below the checkboxes
+     instead of fighting them for horizontal space. */
+  .beacon-row-foot { gap: var(--gap-2); }
+  .beacon-row-foot .beacon-remove { margin-left: 0; align-self: flex-start; }
+
+  /* Collapsible Account section — chevron tight to right edge. */
+  .settings-section--collapsible > summary { padding-right: 36px; }
+  .settings-section--collapsible > summary::after { right: var(--gap-3); }
+
+  /* STATIONS — table morphs to card-per-row list. Each row reads as a
+     self-contained block: phosphor callsign leads, mono meta (time ·
+     pkts) under it, comment as its own line below. thead hides;
+     Position + Symbol cells drop entirely. */
+  .data-table.stations,
+  .data-table.stations tbody { display: block; }
+  .data-table.stations thead { display: none; }
+  .data-table.stations tbody tr {
+    display: block;
+    padding: 12px var(--gap-3);
+    border-bottom: 1px solid var(--row-sep);
+    border-radius: 0;
+  }
+  .data-table.stations tbody tr:hover { background: transparent; }
+  .data-table.stations tbody td {
+    display: block;
+    padding: 0;
+    border: 0;
+    vertical-align: baseline;
+  }
+  .data-table.stations .col-call {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-size: 1rem;
+    margin-bottom: 3px;
+    color: var(--accent);
+  }
+  .data-table.stations .col-call .flag-chip { margin-left: 6px; }
+  /* time + pkts share a single mono meta line */
+  .data-table.stations .col-time,
+  .data-table.stations .col-num {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    text-transform: lowercase;
+  }
+  .data-table.stations .col-num {
+    margin-left: 4px;
+    text-align: left;
+  }
+  .data-table.stations .col-num::before { content: "· "; color: var(--muted-2); margin-right: 4px; }
+  .data-table.stations .col-num::after  { content: " pkts"; }
+  .data-table.stations .col-comment {
+    margin-top: 6px;
+    font-size: 0.86rem;
+    color: var(--fg);
+    line-height: 1.4;
+    word-break: break-word;
+  }
+  .data-table.stations .col-pos,
+  .data-table.stations .col-sym { display: none; }
+  .data-table.stations .empty-row td { padding: var(--gap-5) 0; }
+
+  /* STATIONS controls — Window dropdown short, Search takes the rest. */
+  .stations-controls { gap: var(--gap-2); align-items: stretch; }
+  .stations-controls > label { font-size: 0.7rem; }
+  .stations-controls > label[class*="search"] { flex: 1 1 100%; }
+  .stations-controls input[type="search"] { width: 100%; }
+  .stations-controls .btn { padding: 0 14px; height: 34px; }
+
+  /* DIAGNOSTICS — table morphs to card-per-row. Layout:
+       Row 1: [time] ............................ [origin chip]
+       Row 2: [src] [arrow] [dest]   (left aligned, mono)
+       Row 3: [reason]              (red, emphasis)
+       Row 4: [info code]           (mono, wraps, dim block) */
+  .data-table.diag,
+  .data-table.diag tbody { display: block; }
+  .data-table.diag thead { display: none; }
+  .data-table.diag tbody tr {
+    display: block;
+    padding: 10px var(--gap-3);
+    border-bottom: 1px solid var(--row-sep);
+  }
+  .data-table.diag tbody tr:hover { background: transparent; }
+  .data-table.diag tbody td {
+    display: block;
+    padding: 0;
+    border: 0;
+  }
+  /* Top meta row: time on left, origin chip on right. */
+  .data-table.diag .col-time {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--muted);
+    letter-spacing: 0.06em;
+  }
+  .data-table.diag tbody td:nth-child(2) { /* Origin */
+    display: inline-block;
+    float: right;
+  }
+  /* Src → Dest line: both inline, separated by a styled arrow. */
+  .data-table.diag tbody td:nth-child(3),
+  .data-table.diag tbody td:nth-child(4) {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    vertical-align: baseline;
+    margin-top: 4px;
+  }
+  .data-table.diag tbody td:nth-child(3)::after {
+    content: " → ";
+    color: var(--muted-2);
+    margin: 0 4px;
+  }
+  .data-table.diag tbody td:nth-child(4) { color: var(--muted); }
+  /* Reason on its own row. */
+  .data-table.diag .drop-reason {
+    margin-top: 6px;
+    font-size: 0.82rem;
+    color: var(--err);
+    clear: both;
+  }
+  /* Info code block — wraps + scrolls horizontally as last resort. */
+  .data-table.diag .drop-info { margin-top: 4px; }
+  .data-table.diag .drop-info code {
+    display: block;
+    font-size: 0.72rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--muted);
+    background: var(--panel-overlay);
+    padding: 6px 8px;
+    border-radius: var(--r-1);
+  }
+  .data-table.diag .empty-row td { padding: var(--gap-5) 0; }
+
+  /* MESSAGES — mobile-first rebuild. Single-view paradigm: when no peer
+     is selected, the rail (conversation list) is the page. When a peer
+     IS selected, the pane (thread + composer) takes the screen, with a
+     back arrow returning to the rail. No simultaneous two-pane.
+     Desktop keeps its two-pane layout untouched (rules outside this
+     media query). */
+  .chat-page {
+    display: flex;
+    flex-direction: column;
+    /* Fill viewport height below the topbar + page-head. dvh accounts
+       for iOS browser chrome and soft keyboard appearance. */
+    height: calc(100dvh - 64px);
+    min-height: 0;
+  }
+  /* Drop the page-head entirely on mobile chat — the in-pane head
+     (callsign + back arrow) carries the wayfinding signal. */
+  .chat-page > .page-head { display: none; }
+
+  .chat-shell {
+    flex: 1 1 auto;
+    min-height: 0;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  /* One view at a time. `has-peer` class is added by the template when
+     ?with=CALL is set. */
+  .chat-shell:not(.has-peer) .chat-pane { display: none; }
+  .chat-shell.has-peer .chat-rail { display: none; }
+
+  /* Whichever element is visible fills the chat-shell. */
+  .chat-shell .chat-rail,
+  .chat-shell .chat-pane {
+    flex: 1 1 auto;
+    width: 100%;
+    max-width: none;
+    max-height: none;
+    min-height: 0;
+  }
+
+  /* Rail (conversation list view) — vertical flex so the list scrolls
+     internally below the new-chat form and search. */
+  .chat-rail {
+    display: flex;
+    flex-direction: column;
+  }
+  .chat-conv-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  /* Pane (active thread view) — three rows: head, thread (scroll),
+     composer at bottom. */
+  .chat-pane {
+    display: flex;
+    flex-direction: column;
+  }
+  .chat-pane-head {
+    flex: 0 0 auto;
+    padding: 10px var(--gap-3);
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: var(--gap-2);
+    border-bottom: 1px solid var(--border);
+  }
+  .chat-pane-head .chat-back {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px; height: 36px;
+    color: var(--accent);
+    font-size: 1.35rem;
+    line-height: 1;
+    text-decoration: none;
+    border-radius: var(--r-2);
+    flex: 0 0 36px;
+  }
+  .chat-pane-head .chat-back:hover,
+  .chat-pane-head .chat-back:active { background: var(--panel-overlay); }
+  .chat-pane-head .chat-pane-who { flex: 1 1 auto; min-width: 0; }
+  .chat-pane-head .eyebrow { display: none; }
+  .chat-pane-head .chat-peer-call {
+    font-size: 1.05rem;
+    margin: 0;
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* Auxiliary actions are too heavy for the mobile header — accessible
+     via the station-detail page if needed. */
+  .chat-pane-head .chat-pane-actions { display: none; }
+
+  .chat-thread {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--gap-3);
+  }
+
+  .chat-composer {
+    flex: 0 0 auto;
+    position: static;
+    padding: var(--gap-2) var(--gap-3) calc(var(--gap-2) + env(safe-area-inset-bottom, 0));
+    border-top: 1px solid var(--border-strong);
+    background: var(--panel-2);
+  }
+  /* Specificity-boosted (.chat-shell parent) so this beats the always-on
+     desktop rule at line ~2763 of this file. Same-specificity rules
+     resolve by source order and the desktop rule lives later than this
+     media block. */
+  .chat-shell .chat-composer textarea {
+    /* Two visible lines on mobile: the placeholder ("Message N8MLS-9…
+       (max 67 chars)") and most user input wraps past the narrow
+       width, so a one-line textarea hides the wrapped portion. */
+    min-height: 64px;
+    font-size: 16px; /* prevents iOS auto-zoom on focus */
+    line-height: 1.4;
+    padding: 8px 11px;
+  }
+  /* Send button stays a 44px square. The composer-row's align-items:
+     flex-end (desktop rule) keeps it aligned with the bottom edge of
+     the taller textarea — conventional "send" position. */
+  .chat-shell .chat-send { width: 44px; height: 44px; flex: 0 0 44px; align-self: flex-end; }
+  .chat-composer-foot { gap: var(--gap-2); font-size: 0.7rem; }
+  .chat-composer-flash:empty { display: none; }
+  .chat-composer-toggles { gap: var(--gap-2); }
+  .chat-composer-toggles .cb-tiny { font-size: 0.66rem; }
+  .chat-charcount { font-size: 0.66rem; }
+}
+
+/* Back arrow is mobile-only — hide on desktop. */
+.chat-back { display: none; }
+
+/* (i) popovers never spill off-screen. Always-on. */
+.info-tip-pop { max-width: min(280px, calc(100vw - 32px)); }
+
+/* Kill horizontal overflow at the document root. Phones report the black
+   "off-canvas to the right" when something inside main exceeds the viewport
+   width (long unbroken strings in info fields, hard-pixel widths, etc.).
+   Clamping the root prevents the pinch-zoom-out gap. */
+html, body { overflow-x: hidden; }
+/* Long unbroken strings (info field text, paths, raw packets) wrap rather
+   than force horizontal scroll. */
+.pkt, .station-meta, .popup-comment, .popup-raw, .data-table td {
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 /* Selection */

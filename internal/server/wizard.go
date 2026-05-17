@@ -241,7 +241,7 @@ func (s *Server) wizardSave(w http.ResponseWriter, r *http.Request) {
 		d.Draft.Lat = lat
 		d.Draft.Lon = lon
 		if km, err := strconv.Atoi(r.FormValue("filter_radius")); err == nil && km > 0 {
-			d.Draft.ISFilter = fmt.Sprintf("r/%.2f/%.2f/%d", lat, lon, km)
+			d.Draft.ISFilter = fmt.Sprintf("r/%.2f/%.2f/%d -t/pwntso", lat, lon, km)
 		}
 	case "tnc":
 		kindPath := r.FormValue("kind_path")
@@ -488,12 +488,26 @@ func (s *Server) wizardBTScan(w http.ResponseWriter, r *http.Request) {
 // applyModeDefaults pre-fills appropriate flags for the chosen mode and seeds
 // a single "position" beacon if none exist. Users can edit / add / remove
 // beacons later from the settings page.
+//
+// Also resets the APRS-IS filter to a sane default that excludes the high-
+// volume packet types aprgo never gates (positions, weather, NWS, telemetry,
+// status, objects), keeping only what's actually consumed (messages, queries,
+// items, user-defined, and third-party-wrapped traffic — which has its own
+// classification distinct from the t/X letters per APRS-IS convention).
+// This overwrites any operator customization; switching modes is treated as
+// "reset to defaults for this role." Advanced operators who need a custom
+// filter can still edit it on Settings after switching.
 func applyModeDefaults(st *state.State, m state.Mode) {
 	var path []string
 	// Every preset clears PreemptiveDigipeat — it's an Advanced-only opt-in.
 	// ModeAdvanced (handled below) leaves the operator's setting alone.
 	if m != state.ModeAdvanced {
 		st.PreemptiveDigipeat = false
+	}
+	// Reset the IS filter to mode default (operator's radius preserved).
+	if m != state.ModeOffline {
+		km := filterRadiusFromIS(st.ISFilter)
+		st.ISFilter = fmt.Sprintf("r/%.2f/%.2f/%d -t/pwntso", st.Lat, st.Lon, km)
 	}
 	switch m {
 	case state.ModeRXOnly:
@@ -670,12 +684,18 @@ func splitTNCHostPort(addr string) (host, port string) {
 }
 
 // filterRadiusFromIS parses the trailing km from an APRS-IS server filter
-// string of the form "r/<lat>/<lon>/<km>". Returns 150 (a sensible default
-// for a typical home iGate) when the filter is empty or in some other
-// unexpected shape.
+// of the form "r/<lat>/<lon>/<km>" (possibly followed by additional filter
+// elements like "-t/pwntso"). Returns 150 (a sensible default for a typical
+// home iGate) when the filter is empty or in some other unexpected shape.
 func filterRadiusFromIS(s string) int {
 	if !strings.HasPrefix(s, "r/") {
 		return 150
+	}
+	// Take only the leading r/.../.../... segment; anything after a space
+	// is a separate filter element (e.g. "-t/pwntso") that doesn't carry
+	// radius information.
+	if sp := strings.IndexByte(s, ' '); sp >= 0 {
+		s = s[:sp]
 	}
 	parts := strings.Split(s, "/")
 	if len(parts) < 4 {

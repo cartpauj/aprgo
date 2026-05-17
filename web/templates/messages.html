@@ -5,7 +5,7 @@
     "Title"   "Messages"
     "Lede"    "Two-pane chat: pick a callsign on the left to read the thread; type below to send. Replies arrive automatically.")}}
 
-  <div class="chat-shell">
+  <div class="chat-shell{{if .Peer}} has-peer{{end}}">
     <aside class="chat-rail" aria-label="Conversations">
       <form class="chat-newchat" method="GET" action="/messages" autocomplete="off">
         <label class="chat-newchat-label" for="newchat-input">Start a chat</label>
@@ -34,6 +34,7 @@
     <main class="chat-pane">
     {{if .Peer}}
       <header class="chat-pane-head">
+        <a href="/messages" class="chat-back" aria-label="Back to conversations">←</a>
         <div class="chat-pane-who">
           <div class="eyebrow">Conversation with</div>
           <h2 class="chat-peer-call">{{.Peer}}</h2>

@@ -23,12 +23,12 @@
   <table class="data-table stations">
     <thead>
       <tr>
-        <th>Callsign</th>
-        <th>Last heard</th>
-        <th>Position</th>
+        <th class="col-call">Callsign</th>
+        <th class="col-time">Last heard</th>
+        <th class="col-pos">Position</th>
         <th class="col-num">Pkts</th>
-        <th>Symbol</th>
-        <th>Comment</th>
+        <th class="col-sym">Symbol</th>
+        <th class="col-comment">Comment</th>
       </tr>
     </thead>
     <tbody>
@@ -36,14 +36,14 @@
       <tr>
         <td class="col-call"><a href="/stations/{{.Callsign}}">{{.Callsign}}</a>{{if index $.BlockedSrcs .Callsign}} <span class="flag-chip blocked" title="Over 30 packets/min — in 15-minute timeout">rate-limited</span>{{end}}</td>
         <td class="col-time">{{ago .LastSeen}} ago</td>
-        <td>
+        <td class="col-pos">
           {{if and .Lat.Valid .Lon.Valid}}
             <span class="pos">{{printf "%.4f, %.4f" .Lat.Float64 .Lon.Float64}}</span>
           {{else}}<span class="dim">—</span>{{end}}
         </td>
         <td class="col-num mono-num">{{.PktCount}}</td>
-        <td class="symcell">{{if .Symbol}}{{with aprsIcon .Symbol}}{{.}} {{end}}<code class="dim">{{.Symbol}}</code>{{else}}<span class="dim">—</span>{{end}}</td>
-        <td>{{if .Comment}}{{.Comment}}{{else}}<span class="dim">—</span>{{end}}</td>
+        <td class="col-sym symcell">{{if .Symbol}}{{with aprsIcon .Symbol}}{{.}} {{end}}<code class="dim">{{.Symbol}}</code>{{else}}<span class="dim">—</span>{{end}}</td>
+        <td class="col-comment">{{if .Comment}}{{.Comment}}{{else}}<span class="dim">—</span>{{end}}</td>
       </tr>
       {{else}}
       <tr class="empty-row">

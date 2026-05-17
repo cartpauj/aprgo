@@ -2,7 +2,7 @@
 <html lang="en" class="theme-{{if .Theme}}{{.Theme}}{{else}}auto{{end}}">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>{{.Title}} · aprgo</title>
 <link rel="preload" href="/static/fonts/plex-sans-400.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/static/fonts/plex-mono-500.woff2" as="font" type="font/woff2" crossorigin>
@@ -24,7 +24,12 @@
       <span class="brand-dot" aria-hidden="true"></span>
       <span class="brand-text">aprgo</span>
     </a>
-    <nav aria-label="primary">
+    <button type="button" class="nav-toggle" aria-controls="primary-nav" aria-expanded="false" aria-label="Menu">
+      <span class="nav-toggle-bar" aria-hidden="true"></span>
+      <span class="nav-toggle-bar" aria-hidden="true"></span>
+      <span class="nav-toggle-bar" aria-hidden="true"></span>
+    </button>
+    <nav id="primary-nav" aria-label="primary">
       <a href="/"          {{if eq .Title "Dashboard"}}aria-current="page"{{end}}>Live</a>
       <a href="/map"       {{if eq .Title "Map"}}aria-current="page"{{end}}>Map</a>
       <a href="/messages"  {{if eq .Title "Messages"}}aria-current="page"{{end}}>Messages</a>
@@ -32,6 +37,7 @@
       <a href="/stats"     {{if eq .Title "Stats"}}aria-current="page"{{end}}>Stats</a>
       <a href="/diagnostics" {{if eq .Title "Diagnostics"}}aria-current="page"{{end}}>Diag</a>
       <a href="/settings"  {{if eq .Title "Settings"}}aria-current="page"{{end}}>Settings</a>
+      <a href="/logout" class="nav-logout">Sign out</a>
     </nav>
     <a href="/logout" class="logout">Sign out</a>
   </div>
@@ -42,6 +48,33 @@
 {{define "footer"}}</main>
 {{if .Authed}}<footer class="appfoot" aria-label="version">
   <span class="dim">aprgo {{.Version}}</span>
-</footer>{{end}}
+</footer>
+<script>
+// Mobile nav toggle — single-file enough to live inline. Sets aria-expanded
+// on the hamburger and a body class the CSS hooks onto for the dropdown.
+(function(){
+  var btn = document.querySelector('.nav-toggle');
+  var nav = document.getElementById('primary-nav');
+  if (!btn || !nav) return;
+  function setOpen(o){
+    btn.setAttribute('aria-expanded', String(o));
+    document.body.classList.toggle('nav-open', o);
+  }
+  btn.addEventListener('click', function(e){
+    e.stopPropagation();
+    setOpen(btn.getAttribute('aria-expanded') !== 'true');
+  });
+  nav.addEventListener('click', function(e){
+    if (e.target.tagName === 'A') setOpen(false);
+  });
+  document.addEventListener('click', function(e){
+    if (!btn.contains(e.target) && !nav.contains(e.target)) setOpen(false);
+  });
+  // Esc closes.
+  document.addEventListener('keydown', function(e){
+    if (e.key === 'Escape') setOpen(false);
+  });
+})();
+</script>{{end}}
 </body>
 </html>{{end}}
