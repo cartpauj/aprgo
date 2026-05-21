@@ -9,6 +9,7 @@ package beacon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -26,10 +27,19 @@ import (
 // fixed stations). Values below this are silently bumped up.
 const minInterval = 10 * time.Minute
 
+// ISSender is the subset of the APRS-IS client we use to emit beacons in
+// IS-only mode. Defined as an interface to keep the beacon package free
+// of an igate import (avoids cyclic-dep risk if igate ever grows callbacks
+// back into beacon territory).
+type ISSender interface {
+	Send(packet string) error
+}
+
 // Beacon runs the periodic beacon scheduler.
 type Beacon struct {
 	st  *state.Store
 	rf  *rf.RF
+	is  ISSender
 	bus *bus.Bus
 
 	// Per-beacon firing state, keyed by beacon name. Recreated when the list
@@ -107,7 +117,9 @@ func (b *Beacon) Run(ctx context.Context) {
 					continue
 				}
 				if err := b.transmit(snap, cfg); err != nil {
-					log.Printf("beacon[%s]: %v", cfg.Name, err)
+					if !errors.Is(err, rf.ErrTXDisabled) {
+						log.Printf("beacon[%s]: %v", cfg.Name, err)
+					}
 					continue
 				}
 				fs.last = now
@@ -128,6 +140,20 @@ func (b *Beacon) Run(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// TransmitNow finds an enabled beacon by name and fires it immediately,
+// bypassing the schedule. Used to satisfy `?APRS?` general queries (which
+// request a position + status from the queried station). Returns an error
+// if no enabled beacon with that name exists.
+func (b *Beacon) TransmitNow(name string) error {
+	snap := b.st.Snapshot()
+	for _, cfg := range snap.Beacons {
+		if cfg.Name == name && cfg.Enabled {
+			return b.transmit(snap, cfg)
+		}
+	}
+	return fmt.Errorf("no enabled beacon named %q", name)
 }
 
 func (b *Beacon) transmit(snap state.State, cfg state.Beacon) error {

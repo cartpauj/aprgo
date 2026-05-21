@@ -71,6 +71,7 @@
   --err-rgb:   255, 91, 108;
   --err-soft:  rgba(255, 91, 108, 0.10);
   --info:      #6ccfff;
+  --info-soft: rgba(108, 207, 255, 0.12);
 
   --link:           var(--accent);
   --shadow-lg:      0 16px 40px -12px rgba(0, 0, 0, 0.7);
@@ -135,6 +136,7 @@ html.theme-light {
   --err-rgb:   191, 38, 48;
   --err-soft:  rgba(191, 38, 48, 0.10);
   --info:      #0a558c;
+  --info-soft: rgba(10, 85, 140, 0.12);
 
   --shadow-lg: 0 16px 40px -12px rgba(15, 25, 40, 0.14);
   --shadow-md: 0 4px 16px -6px rgba(15, 25, 40, 0.08);
@@ -177,6 +179,7 @@ html.theme-light {
     --err-rgb:   191, 38, 48;
     --err-soft:  rgba(191, 38, 48, 0.10);
     --info:      #0a558c;
+    --info-soft: rgba(10, 85, 140, 0.12);
     --shadow-lg: 0 16px 40px -12px rgba(15, 25, 40, 0.14);
     --shadow-md: 0 4px 16px -6px rgba(15, 25, 40, 0.08);
     --panel-overlay: rgba(15, 25, 40, 0.03);
@@ -264,7 +267,10 @@ h3 { font-weight: 500; font-size: 0.95rem; margin: var(--gap-4) 0 var(--gap-2); 
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
-  z-index: 50;
+  /* z-index 1000 because Leaflet's default pane stack runs 400–700 and
+     would otherwise sit on top of the sticky header — including the
+     mobile-menu drawer, which made the menu unreachable on the map page. */
+  z-index: 1000;
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
 }
@@ -356,6 +362,28 @@ h3 { font-weight: 500; font-size: 0.95rem; margin: var(--gap-4) 0 var(--gap-2); 
 }
 .default-pw-banner code { background: rgba(var(--err-rgb), 0.15); border-color: rgba(var(--err-rgb), 0.4); color: var(--err); }
 .default-pw-banner a { color: var(--err); text-decoration: underline; }
+
+.conn-err-banner {
+  background: var(--err-soft);
+  border-bottom: 1px solid rgba(var(--err-rgb), 0.35);
+  color: var(--err);
+  padding: 8px var(--gap-5);
+  font-size: 0.8rem;
+  text-align: center;
+  letter-spacing: 0.015em;
+}
+.conn-err-banner code { background: rgba(var(--err-rgb), 0.15); border-color: rgba(var(--err-rgb), 0.4); color: var(--err); }
+
+.tx-off-banner {
+  background: rgba(255, 184, 77, 0.12);
+  border-bottom: 1px solid rgba(255, 184, 77, 0.35);
+  color: var(--warn);
+  padding: 8px var(--gap-5);
+  font-size: 0.8rem;
+  text-align: center;
+  letter-spacing: 0.015em;
+}
+.tx-off-banner a { color: var(--warn); text-decoration: underline; }
 
 /* ─── Section labels & tagline rows ───────────────────────────────────── */
 .section-label {
@@ -633,6 +661,42 @@ input[type="checkbox"] {
   gap: 0;
 }
 
+/* Inactive flag (advanced-mode dependency unmet). Dim the whole label
+   and block interactions, except the (i) bubble so the operator can read
+   the reason. Tooltip surfaced via data-inactive-reason on the label. */
+label.is-inactive {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+label.is-inactive .info-tip { pointer-events: auto; }
+label.is-inactive[data-inactive-reason]::after {
+  content: " · " attr(data-inactive-reason);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-style: italic;
+  color: var(--muted-2);
+  margin-left: 4px;
+  pointer-events: none;
+}
+
+/* Compact numeric-input row — label and a narrow input sitting next to
+   each other at the LEFT, not stretched across the row. Used for short-
+   numeric fields like the "Recent-RF window" minutes input. */
+label.num-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--gap-3);
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+label.num-row > .label-head { flex: 0 0 auto; }
+label.num-row > input[type="number"] {
+  width: 110px;
+  flex: 0 0 110px;
+}
+
 /* ─── Page heads ──────────────────────────────────────────────────────── */
 .page-head {
   display: flex;
@@ -714,6 +778,57 @@ input[type="checkbox"] {
 
 /* ─── Dashboard / RX feed ─────────────────────────────────────────────── */
 .dashboard h1 + .dash-meta { color: var(--muted); font-size: 0.85rem; margin-bottom: var(--gap-4); }
+
+/* Status strip — mode-aware at-a-glance station health and counts.
+   Set by handleDashboard via dashboardStatusCards(); cards re-order
+   per mode (digi-first for ModeDigi, gating-first for messaging, etc).
+   Tone classes (.tone-ok / .tone-warn / .tone-err) drive the left-edge
+   accent and value color. */
+.status-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--gap-3);
+  margin-bottom: var(--gap-4);
+}
+.status-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: var(--r-2);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: var(--font-mono);
+}
+.status-card.tone-ok   { border-left-color: var(--ok, #3fb950); }
+.status-card.tone-warn { border-left-color: var(--warn, #d29922); }
+.status-card.tone-err  { border-left-color: var(--err, #f85149); }
+.status-label {
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.status-value {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.status-card.tone-ok   .status-value { color: var(--ok, #3fb950); }
+.status-card.tone-warn .status-value { color: var(--warn, #d29922); }
+.status-card.tone-err  .status-value { color: var(--err, #f85149); }
+.status-sub {
+  font-size: 0.7rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .console-bar {
   display: flex;
   align-items: center;
@@ -847,7 +962,7 @@ html.theme-light .rx-feed, html.theme-auto .rx-feed {
 }
 .pkt .dir.rx,
 .pkt .dir.rf { background: var(--rx-soft); color: var(--rx); }
-.pkt .dir.is { background: var(--accent-soft); color: var(--accent); }
+.pkt .dir.is { background: var(--info-soft); color: var(--info); }
 .pkt .dir.tx {
   background: var(--tx);
   color: var(--bg);
@@ -867,6 +982,8 @@ html.theme-light .rx-feed, html.theme-auto .rx-feed {
   opacity: 0.85;
 }
 .pkt .pos     { color: var(--accent); font-weight: 500; font-variant-numeric: tabular-nums; }
+.pkt .obj-name { color: var(--warn); font-weight: 600; }
+.pkt .telem-cfg { color: var(--info); font-size: 0.85em; font-style: italic; }
 .pkt .sym     {
   color: var(--muted); font-size: 0.78em;
   padding: 1px 6px;
@@ -881,6 +998,7 @@ html.theme-light .rx-feed, html.theme-auto .rx-feed {
 .pkt .motion  { color: var(--info); font-size: 0.85em; }
 .pkt .alt     { color: var(--alt-color); font-size: 0.85em; }
 .pkt .freq    { color: var(--freq-color); font-size: 0.85em; font-weight: 500; }
+.pkt .freq-extra { color: var(--freq-color); font-size: 0.78em; opacity: 0.7; font-family: var(--font-mono); }
 .pkt .status  { color: var(--warn); font-size: 0.85em; }
 .pkt .wx      { color: var(--info); font-size: 0.85em; font-variant-numeric: tabular-nums; }
 .pkt .phg     { color: var(--muted); font-size: 0.78em; padding: 1px 6px; background: var(--panel-overlay); border-radius: 2px; }
@@ -902,9 +1020,31 @@ html.theme-light .rx-feed, html.theme-auto .rx-feed {
 .pkt .path .hop.is-used  { color: var(--accent); font-weight: 500; }
 .pkt .path .hop.is-q     { color: var(--alt-color); opacity: 0.75; font-style: italic; }
 
-.pkt .info-raw { display: none; color: var(--fg); }
-body.view-raw .pkt .info-parsed { display: none; }
-body.view-raw .pkt .info-raw { display: inline; }
+.pkt .parsed-line {
+  /* Flex item containing inline parsed-info chips. Without flex:1 1 0;
+     min-width:0; the item is sized to its intrinsic content width and
+     overflows / forces awful wrap behavior on long packets. With these
+     it takes the remaining row width and lets its inline children wrap
+     at whitespace between chips (chips themselves stay whole). */
+  flex: 1 1 0;
+  min-width: 0;
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+.pkt .raw-line {
+  display: none;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  /* Same flex sizing as .parsed-line so short packets stay on the same
+     row as t/dir and only long packets wrap to the next line. Raw TNC2
+     has no spaces inside it, so when it does need to wrap it breaks
+     mid-token (break-all) rather than overflowing. */
+  word-break: break-all;
+  flex: 1 1 0;
+  min-width: 0;
+}
+body.view-raw .pkt .parsed-line { display: none; }
+body.view-raw .pkt .raw-line    { display: inline; }
 
 /* Empty state in feed */
 .rx-feed .empty {
@@ -1218,24 +1358,164 @@ body.view-raw .pkt .info-raw { display: inline; }
   font-size: 0.7rem;
 }
 .map-status { color: var(--muted); margin-left: auto; font-size: 0.75rem; letter-spacing: 0.06em; }
+.map-search-label input {
+  padding: 5px 8px;
+  font-family: var(--font-sans);
+  font-size: 0.82rem;
+  min-width: 420px;
+}
+.map-filters-toggle { font-size: 0.75rem; padding: 4px 10px; }
+.map-cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-3);
+  padding: 8px var(--gap-4);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-top: 0;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+.map-cats legend { display: none; }
+.map-cats label {
+  display: inline-flex;
+  /* Override the global `label { flex-direction: column }` rule (which
+     was forcing the text under the checkbox in a vertical stack). */
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  /* Keep the checkbox + text together as a single unwrappable unit; the
+     outer .map-cats flex container handles wrapping between labels. */
+  white-space: nowrap;
+  flex: 0 0 auto;
+  /* The global label rule also sets uppercase + letter-spacing — reset
+     here so the category names render in normal case for readability
+     of the emoji + label combo. */
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.78rem;
+  color: var(--fg);
+}
+.map-cats input {
+  margin: 0;
+  flex: 0 0 auto;
+}
+/* APRS sprite icons inside the filter labels are 24×24 by default which
+   reads as too heavy next to the checkbox + text. Visually shrink via
+   transform (cheap, no background-size math) and pull surrounding margin
+   in to collapse the unused box space. */
+.map-cats .aprs-sym,
+.map-cats .aprs-sym-wrap {
+  transform: scale(0.85);
+  margin: -2px -1px;
+}
+
+/* Inline APRS symbol icon in the live-feed packet rows. Smaller than
+   the table inline-sym (16px instead of 24) since it sits beside dense
+   text and shouldn't dominate the line height. background-size scales
+   the sprite proportionally — sprite sheet is 384×144 native (16 cols
+   × 6 rows × 24px); at 16px target it becomes 256×96. */
+.feed-sym, .feed-sym-wrap {
+  display: inline-block;
+  width: 16px; height: 16px;
+  vertical-align: middle;
+  margin-right: 4px;
+  background-repeat: no-repeat;
+  background-size: 256px 96px;
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: crisp-edges;
+}
+.feed-sym-wrap { position: relative; }
+.feed-sym-wrap .feed-sym {
+  position: absolute; left: 0; top: 0;
+  margin: 0;
+}
+.feed-sym-wrap .feed-sym-overlay {
+  position: absolute; left: 0; top: 0;
+  width: 16px; height: 16px;
+  background-size: 256px 96px;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
+/* Mobile: collapse the cats panel by default; toggle button reveals.
+   Above 700px the panel is always visible inline and the toggle button
+   hides itself (option A behavior). */
+@media (max-width: 700px) {
+  .map-cats[data-collapsed="true"] { display: none; }
+  .map-search-label input { min-width: 0; flex: 1; }
+}
+@media (min-width: 701px) {
+  .map-filters-toggle { display: none; }
+}
 .leaflet-map {
   height: 78vh;
   border-radius: 0 0 var(--r-3) var(--r-3);
   border: 1px solid var(--border);
   border-top: 0;
 }
+/* Leaflet stacks panes/controls at z-index 400-800 by default, which can
+   sit on top of fixed nav menus. Constrain the map's stacking context so
+   the site header / mobile menu (z-index >= 1000) always wins. */
+.leaflet-map .leaflet-pane,
+.leaflet-map .leaflet-top,
+.leaflet-map .leaflet-bottom {
+  z-index: 100 !important;
+}
+.leaflet-map .leaflet-popup-pane { z-index: 200 !important; }
 .aprs-sym-icon { background: transparent; border: 0; }
-.aprs-sym-base { background-repeat: no-repeat; image-rendering: -webkit-optimize-contrast; image-rendering: crisp-edges; }
-.aprs-sym-overlay { background-repeat: no-repeat; }
+.aprs-sym-base { background-repeat: no-repeat; background-size: 384px 144px; }
+.aprs-sym-overlay { background-repeat: no-repeat; background-size: 384px 144px; }
 
-/* Inline APRS symbol (used in tables / lists) */
+/* Map marker "I just appeared or moved" highlight. Pulses a soft amber
+   glow around the symbol for ~2.5s then fades out. Triggered from
+   map.js flashMarker() on new markers and on existing markers whose
+   coordinates changed since the last refresh.
+
+   Targets the INNER .aprs-sym-wrap, not the outer .leaflet-marker-icon
+   element — Leaflet positions markers via translate3d on the outer
+   element, so a transform here would clobber positioning and the marker
+   would jump off-screen. */
+/* Two layered effects so this is impossible to miss:
+   1. Symbol scales up + drop-shadow pulses.
+   2. An overlaid ring (::after) expands outward and fades — works even
+      when filter: drop-shadow is muted on a low-power GPU. */
+@keyframes aprs-flash-symbol {
+  0%   { filter: drop-shadow(0 0 0 rgba(255, 196, 0, 0));      transform: scale(1); }
+  20%  { filter: drop-shadow(0 0 14px rgba(255, 196, 0, 1));   transform: scale(1.6); }
+  60%  { filter: drop-shadow(0 0 10px rgba(255, 196, 0, 0.7)); transform: scale(1.15); }
+  100% { filter: drop-shadow(0 0 0 rgba(255, 196, 0, 0));      transform: scale(1); }
+}
+@keyframes aprs-flash-ring {
+  0%   { box-shadow: 0 0 0 0   rgba(255, 196, 0, 0.95); opacity: 1; }
+  100% { box-shadow: 0 0 0 28px rgba(255, 196, 0, 0);    opacity: 0; }
+}
+.aprs-flash .aprs-sym-wrap {
+  animation: aprs-flash-symbol 2.5s ease-out;
+  transform-origin: center center;
+  overflow: visible;
+  position: relative;
+}
+.aprs-flash .aprs-sym-wrap::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  pointer-events: none;
+  animation: aprs-flash-ring 2.5s ease-out;
+}
+
+/* Inline APRS symbol (used in tables / lists / station hero) — 48px sprite
+   sheet displayed at 24 logical px by default. The `.large` modifier on a
+   wrapping element renders at the sprite's natural 48px size for places
+   that want a hero icon (station detail page). */
 .aprs-sym {
   display: inline-block;
   width: 24px; height: 24px;
   vertical-align: middle;
   background-repeat: no-repeat;
-  image-rendering: -webkit-optimize-contrast;
-  image-rendering: crisp-edges;
+  background-size: 384px 144px;
   flex: 0 0 24px;
 }
 .aprs-sym-wrap {
@@ -1248,7 +1528,24 @@ body.view-raw .pkt .info-raw { display: inline; }
 .aprs-sym-wrap .aprs-sym-overlay {
   position: absolute; left: 0; top: 0;
   width: 24px; height: 24px;
+  background-size: 384px 144px;
   pointer-events: none;
+}
+/* Hero/large rendering used by the station-detail page where the icon
+   sits next to the large callsign heading. Uses CSS transform to scale
+   the inline 24-rendered icon back up to 48 — since the underlying
+   bitmap is already 48px, this gives a 1:1 native render with no
+   resampling. transform-origin avoids drift away from where it would
+   sit at 24px. */
+.aprs-sym-wrap.large,
+.aprs-sym.large {
+  width: 48px; height: 48px;
+}
+.aprs-sym-wrap.large .aprs-sym,
+.aprs-sym-wrap.large .aprs-sym-overlay,
+.aprs-sym.large {
+  transform: scale(2);
+  transform-origin: top left;
 }
 
 .leaflet-container { background: var(--map-bg); }
@@ -1310,10 +1607,16 @@ body.view-raw .pkt .info-raw { display: inline; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.popup-icon { display: inline-block; width: 24px; height: 24px; background-repeat: no-repeat; flex: 0 0 24px; }
+/* Sprite sheets are the hessu/aprs-symbols 48px set (the modern aprs.fi
+   assets) rendered at 24 logical px. background-size 384x144 scales the
+   natural 768x288 bitmap to half size, putting cells at the same 24-unit
+   positions the JS emits — so callers can keep using 24-unit position
+   math. On 2x DPR displays the browser maps 24 logical → 48 device px and
+   draws from the original sprite resolution = crisp. */
+.popup-icon { display: inline-block; width: 24px; height: 24px; background-repeat: no-repeat; background-size: 384px 144px; flex: 0 0 24px; }
 .popup-icon-wrap { position: relative; display: inline-block; width: 24px; height: 24px; }
 .popup-icon-wrap .popup-icon { position: absolute; left: 0; top: 0; }
-.popup-icon-overlay { position: absolute; left: 0; top: 0; width: 24px; height: 24px; background-repeat: no-repeat; pointer-events: none; }
+.popup-icon-overlay { position: absolute; left: 0; top: 0; width: 24px; height: 24px; background-repeat: no-repeat; background-size: 384px 144px; pointer-events: none; }
 .popup-call {
   color: var(--accent) !important;
   font-weight: 600;
@@ -1356,6 +1659,15 @@ body.view-raw .pkt .info-raw { display: inline; }
   font-variant-numeric: tabular-nums;
 }
 .popup-facts dt:last-of-type, .popup-facts dd:last-of-type { border-bottom: 0; }
+
+.popup-object {
+  padding: 4px 14px 8px;
+  color: var(--warn);
+  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+  letter-spacing: 0.01em;
+}
 
 .popup-comment {
   padding: 10px 14px;
@@ -2217,6 +2529,53 @@ html, body { overflow-x: hidden; }
   color: var(--muted);
   margin-top: 4px;
 }
+.object-banner {
+  display: inline-block;
+  margin: 0 0 12px;
+  padding: 4px 10px;
+  border-radius: var(--r-1);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.telem-card .telem-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  margin-top: 8px;
+}
+.telem-card .telem-table th {
+  text-align: left;
+  padding: 4px 8px 4px 0;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+}
+.telem-card .telem-table td {
+  padding: 3px 8px 3px 0;
+  vertical-align: top;
+}
+.telem-card .telem-table td.mono { font-family: var(--font-mono); color: var(--muted); }
+.telem-card .bit-chip {
+  display: inline-block;
+  padding: 1px 6px;
+  margin: 2px 4px 2px 0;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.telem-card .bit-chip.on {
+  border-color: rgba(var(--accent-rgb), 0.4);
+  color: var(--accent);
+}
 .station-card.wx-card .wx-dl {
   display: grid;
   grid-template-columns: max-content 1fr;
@@ -2902,7 +3261,7 @@ html.theme-light .chat-thread, html.theme-auto .chat-thread { background: var(--
 }
 .feed-chip[data-filter="tx"].is-active { background: var(--tx); }
 .feed-chip[data-filter="rf"].is-active { background: var(--rx); }
-.feed-chip[data-filter="is"].is-active { background: var(--accent); }
+.feed-chip[data-filter="is"].is-active { background: var(--info); }
 
 /* Visibility rules — drive off the data attribute on #rx-feed. All four
    values are explicit so adding a new origin later won't silently hide
@@ -3118,10 +3477,11 @@ html.theme-light .chat-thread, html.theme-auto .chat-thread { background: var(--
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 10px 3px 8px;
+  padding: 6px 12px 6px 10px;
   border-radius: 999px;
   font-family: var(--font-mono);
   font-size: 0.72rem;
+  line-height: 1;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   background: transparent;
@@ -3130,7 +3490,7 @@ html.theme-light .chat-thread, html.theme-auto .chat-thread { background: var(--
 }
 .flag-chip::before {
   content: "○";
-  font-size: 0.85rem;
+  font-size: 0.72rem;
   line-height: 1;
   color: var(--muted-2);
 }

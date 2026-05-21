@@ -125,6 +125,7 @@ type Station struct {
 
 // UpsertHeard records or updates a station from an RX event.
 func (s *Store) UpsertHeard(callsign string, t time.Time, path, info, dest string, src ax25.Source, lat, lon *float64, symbol, comment string) error {
+	callsign = strings.ToUpper(callsign)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, err := s.db.Begin()
@@ -341,13 +342,26 @@ func (s *Store) SearchMessages(query string, limit int) ([]Message, error) {
 	return out, rows.Err()
 }
 
+// CountHeardOnRF returns the number of distinct stations heard via RF since
+// `since`. Used to populate LOC_CNT in the `?IGATE?` capability response.
+func (s *Store) CountHeardOnRF(since time.Time) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var n int
+	row := s.db.QueryRow(`SELECT COUNT(*) FROM stations WHERE last_seen_rf >= ?`, since.Unix())
+	_ = row.Scan(&n)
+	return n
+}
+
 // HeardOnRF reports whether callsign has been heard via RF since `since`.
 // Used by Phase 3 IS→RF gating.
 func (s *Store) HeardOnRF(callsign string, since time.Time) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var ts sql.NullInt64
-	err := s.db.QueryRow(`SELECT last_seen_rf FROM stations WHERE callsign = ?`, callsign).Scan(&ts)
+	// UPPER() on both sides so legacy mixed-case rows match even before they
+	// get re-upserted (new rows are uppercased at write time by UpsertHeard).
+	err := s.db.QueryRow(`SELECT last_seen_rf FROM stations WHERE UPPER(callsign) = UPPER(?)`, callsign).Scan(&ts)
 	if err != nil || !ts.Valid {
 		return false
 	}
@@ -469,9 +483,11 @@ func (s *Store) MarkAck(source, dest, msgID string) (int64, error) {
 	defer s.mu.Unlock()
 	// Find the most recent matching pending/unacked outbound row so we can
 	// return its ID (the retry worker uses this to dequeue immediately).
+	// Callsigns are case-insensitive per APRS convention; msgID likewise
+	// (some clients echo back lowercase variants of base91 reply-ack IDs).
 	var id int64
 	err := s.db.QueryRow(`SELECT id FROM messages
-		WHERE direction='out' AND source=? AND dest=? AND msg_id=? AND state IN ('pending','acked') AND acked=0
+		WHERE direction='out' AND UPPER(source)=UPPER(?) AND UPPER(dest)=UPPER(?) AND UPPER(msg_id)=UPPER(?) AND state IN ('pending','acked') AND acked=0
 		ORDER BY id DESC LIMIT 1`,
 		source, dest, msgID).Scan(&id)
 	if err != nil {
@@ -484,6 +500,30 @@ func (s *Store) MarkAck(source, dest, msgID string) (int64, error) {
 		return 0, err
 	}
 	if _, err := s.db.Exec(`UPDATE messages SET acked=1, state='acked' WHERE id=?`, id); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+// MarkRej flips the matching outbound row to state='rejected'. Mirror of
+// MarkAck for `rej` responses — the peer received the message but refused
+// to handle it; retries should stop, but the UI should distinguish "delivered"
+// from "rejected".
+func (s *Store) MarkRej(source, dest, msgID string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM messages
+		WHERE direction='out' AND UPPER(source)=UPPER(?) AND UPPER(dest)=UPPER(?) AND UPPER(msg_id)=UPPER(?) AND state IN ('pending','acked') AND acked=0
+		ORDER BY id DESC LIMIT 1`,
+		source, dest, msgID).Scan(&id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if _, err := s.db.Exec(`UPDATE messages SET acked=1, state='rejected' WHERE id=?`, id); err != nil {
 		return 0, err
 	}
 	return id, nil

@@ -7,6 +7,18 @@
     "Title"   "Live RX feed"
     "Lede"    "Packets arrive top-down as your iGate hears them — RF and APRS-IS interleaved. Click any callsign to open its station detail.")}}
 
+  {{if .StatusCards}}
+  <div class="status-strip" aria-label="Station status">
+    {{range .StatusCards}}
+    <div class="status-card{{if .Tone}} tone-{{.Tone}}{{end}}">
+      <div class="status-label">{{.Label}}</div>
+      <div class="status-value">{{.Value}}</div>
+      {{if .Sub}}<div class="status-sub">{{.Sub}}</div>{{end}}
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+
   <div class="console-bar">
     <div class="console-bar-left">
       <span class="console-led" id="feed-led" title="Live packet feed. Green = your browser is polling the iGate for fresh packets every 2.5s.">

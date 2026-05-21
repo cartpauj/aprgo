@@ -49,7 +49,7 @@ func (a *Authenticator) Check(user, pass string) bool {
 // IssueCookie writes a signed session cookie identifying user.
 // Cookie payload includes the current PasswordGeneration so changing the
 // password invalidates all outstanding sessions.
-func (a *Authenticator) IssueCookie(w http.ResponseWriter, user string) {
+func (a *Authenticator) IssueCookie(w http.ResponseWriter, r *http.Request, user string) {
 	exp := time.Now().Add(cookieMaxAge).Unix()
 	gen := a.store.PasswordGeneration()
 	payload := fmt.Sprintf("%s|%d|%d", user, gen, exp)
@@ -61,11 +61,31 @@ func (a *Authenticator) IssueCookie(w http.ResponseWriter, user string) {
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		// Secure intentionally NOT forced: aprgo is typically served over plain
-		// HTTP on a LAN. CSRF protection (token + Origin check + SameSite=Strict)
-		// covers the threat model. Set Secure=true at your reverse proxy if TLS.
+		// Secure is auto-enabled when the request reached us over TLS
+		// (direct HTTPS or behind a trusted reverse proxy passing
+		// X-Forwarded-Proto=https). For the typical LAN-HTTP deploy this
+		// stays false; CSRF protection (token + Origin + SameSite=Strict)
+		// covers the threat model in either case.
+		Secure:  isTLSRequest(r),
 		Expires: time.Now().Add(cookieMaxAge),
 	})
+}
+
+// isTLSRequest reports whether the request was carried over TLS. Direct
+// TLS sets r.TLS; behind a reverse proxy we check X-Forwarded-Proto. The
+// X-Forwarded-Proto check is only meaningful when the proxy is trusted —
+// callers should run aprgo behind a known proxy if they rely on that path,
+// otherwise a malicious client could spoof the header to flip Secure=true
+// (which would only HURT them by making the cookie un-readable over plain
+// HTTP — so the spoof is self-defeating; we accept the simplicity).
+func isTLSRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 // ClearCookie expires the session cookie.

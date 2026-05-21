@@ -157,6 +157,51 @@ These came up in audits but were explicitly punted on:
 
 What's done so we don't redo:
 
+### Recent batch (2026-05-17/18)
+- **Rich APRS parsing**: weather (positional WX records per APRS spec §12),
+  PHG / RNG (power-height-gain-direction range estimate), aprsorg/aprs-deviceid
+  tocall registry embedded (382 entries) for device-ID chips, path beautifier
+  splitting used digis vs APRS-IS q-construct. Surfaces in dashboard live feed,
+  map popups, station-detail Equipment/Weather/Coverage cards. 15 new
+  parsers_test.go cases.
+- **APRS-IS server filter shrinkage**: filter is now mode-derived from radius
+  + `-t/pwntso` exclusion to drop the firehose (positions/weather/NWS/
+  telemetry/status/objects). Server-side filter swap on mode change.
+- **Mobile responsive overhaul**: hamburger nav with slide-down dropdown.
+  Card-per-row morph for Stations and Diagnostics on phones. Messages page
+  rebuilt single-view (rail OR thread, not both), composer flows naturally
+  with the keyboard via 100dvh-bounded layout. Pinch-zoom blocked
+  (maximum-scale=1) + global 16px font on form controls to kill iOS auto-zoom.
+- **TCP host/port split**: wizard's Network (TCP KISS) step has separate
+  host and port fields (port defaults to 8001). Combined into `host:port`
+  on save, split back on display.
+- **Region dropdown for APRS-IS server**: Settings APRS-IS section now offers
+  rotate / noam / euro / asia / aunz / soam aprs2.net regional servers plus
+  Custom. Replaces the freeform host input.
+- **Station-detail "Show on map" link**: navigates to `/map?focus=CALL`
+  which initializes the map in single-station focus + pans to the marker.
+- **Inbound message via-flag merge**: when the same message arrives via
+  both RF and IS within the dedupe window, the message row's `via_rf` and
+  `via_is` flags are merged so the conversation page shows both badges
+  instead of just the first-seen transport.
+- **TNCAddr self-heal**: wizard's serial save case no longer clears the
+  TNCAddr field (was breaking BT setups when an operator picked the
+  rfcomm device from the "Detected serial devices" list). At supervisor
+  startup, if state has rfcomm path but no MAC, aprgo queries the kernel's
+  current rfcomm binding (via `tnc.CurrentRfcommMAC`) and adopts whatever's
+  actually bound. Gated to one-shot at startup to avoid the mid-handshake
+  race where `rfcomm` transiently reports the local adapter MAC.
+- **IS→RF "recent RF" window operator-configurable**: `IGateRecentRFMinutes`
+  setting (defaults 360 / 6 hr) exposed in Settings → Gating in Advanced
+  mode. Used by both the dashboard live-feed inclusion filter and the
+  gate's IS→RF decision callback.
+- **Graceful shutdown**: rf.session and igate.session now spawn a context
+  watcher that closes the underlying fd on ctx cancellation, so blocking
+  reads on /dev/rfcomm0 / TCP unblock immediately during shutdown. Stops
+  systemd from SIGKILL'ing aprgo on every deploy after the 90s SIGTERM
+  timeout.
+
+
 ### Modes + on-air behavior
 - 7 operating modes: rx-only, tx-igate, fillin-igate, full-digi,
   messaging-only (selective gating: messages + acks only), offline (no

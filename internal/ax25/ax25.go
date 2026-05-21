@@ -124,13 +124,22 @@ func DecodeUIFrame(b []byte) (src, dest string, digis []string, info []byte, err
 	if last {
 		return "", "", nil, nil, fmt.Errorf("no source address")
 	}
+	if !validAX25BaseCall(baseCall(dest)) {
+		return "", "", nil, nil, fmt.Errorf("invalid dest callsign %q", dest)
+	}
 	src, last = decodeCallsign(b[7:14])
+	if !validAX25BaseCall(baseCall(src)) {
+		return "", "", nil, nil, fmt.Errorf("invalid src callsign %q", src)
+	}
 	pos := 14
 	for !last && pos+7 <= len(b) && len(digis) < MaxDigipeaters {
 		c, l := decodeCallsign(b[pos : pos+7])
 		// Restore "*" marker for used digis
 		if b[pos+6]&0x80 != 0 {
 			c += "*"
+		}
+		if !validAX25BaseCall(baseCall(c)) {
+			return "", "", nil, nil, fmt.Errorf("invalid path hop %q", c)
 		}
 		digis = append(digis, c)
 		last = l
@@ -155,7 +164,16 @@ func DecodeUIFrame(b []byte) (src, dest string, digis []string, info []byte, err
 func decodeCallsign(b []byte) (string, bool) {
 	chars := make([]byte, 6)
 	for i := 0; i < 6; i++ {
-		chars[i] = b[i] >> 1
+		c := b[i] >> 1
+		// AX.25 v2.2 §3.12 specifies address bytes are uppercase ASCII +
+		// space-padded. A non-conforming TNC could emit lowercase, which
+		// would then fail validAX25BaseCall (the validator legitimately
+		// requires [A-Z0-9]). Upper-case at decode so we accept lowercase
+		// transmitters without dropping the whole frame.
+		if c >= 'a' && c <= 'z' {
+			c -= 32
+		}
+		chars[i] = c
 	}
 	call := strings.TrimRight(string(chars), " ")
 	ssid := int(b[6]>>1) & 0x0F
@@ -164,5 +182,34 @@ func decodeCallsign(b []byte) (string, bool) {
 		return fmt.Sprintf("%s-%d", call, ssid), last
 	}
 	return call, last
+}
+
+// validAX25BaseCall reports whether s is a syntactically valid AX.25 address
+// field per AX.25 v2.2 §3.12 and APRS101 §3.4: 1-6 uppercase letters and
+// digits. Tactical addresses are alphanumeric (RELAY, ECHO, WIDE1, etc.),
+// tocalls are alphanumeric (APRS, APN383, BEACON), so this covers both.
+// SSID is encoded in the high byte and is not part of `s`.
+func validAX25BaseCall(s string) bool {
+	if len(s) == 0 || len(s) > 6 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// baseCall returns the part of a TNC2 callsign before any "-SSID" suffix.
+func baseCall(s string) string {
+	if i := strings.IndexByte(s, '-'); i >= 0 {
+		return s[:i]
+	}
+	return strings.TrimSuffix(s, "*")
 }
 

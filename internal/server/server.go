@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"crypto/sha1"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -85,6 +86,11 @@ type Server struct {
 	// drops holds the last N gate-drop reasons for the /diagnostics page.
 	drops *dropRing
 
+	// msgTracker remembers callsigns we recently IS→RF gated a message FROM
+	// so the next position packet for each can be gated to RF once (per
+	// APRS-IS IGating.aspx "responder position" courtesy).
+	msgTracker *gate.MessagedRecipientTracker
+
 	loginLimit *loginLimiter
 
 	// In-flight async Bluetooth pair operations, keyed by session cookie.
@@ -105,6 +111,19 @@ type staticAsset struct {
 }
 
 const recentCap = 200
+
+// recentRFWindow returns the "how recently must we have heard this station on
+// RF" window used by both the IS→RF gating decision and the dashboard live-
+// feed inclusion rules. Falls back to DefaultIGateRecentRFMinutes (30 min,
+// per APRS-IS IGating.aspx convention) when the operator hasn't set it
+// explicitly. Configurable on the Settings page in Advanced mode.
+func recentRFWindow(snap state.State) time.Duration {
+	m := snap.IGateRecentRFMinutes
+	if m <= 0 {
+		m = state.DefaultIGateRecentRFMinutes
+	}
+	return time.Duration(m) * time.Minute
+}
 
 // mainVersion is set by cmd/aprgo via SetVersion at startup, used for UI display.
 var mainVersion = "dev"
@@ -161,8 +180,10 @@ func New(opts Options) (*Server, error) {
 		rf:      rf.New(st, b),
 		tmpl:    tmpl,
 		static:  staticMap,
-		dupe:    newDupeTable(60 * time.Second),
-		msgDupe:     newDupeTable(60 * time.Second),
+		// 30s matches APRS-IS reference (javAPRSSrvr) — collapses multi-digi
+		// receipts of the same content without swallowing intentional resends.
+		dupe:        newDupeTable(30 * time.Second),
+		msgDupe:     newDupeTable(30 * time.Second),
 		// 15 minutes is wide enough to absorb radios that keep retrying
 		// the same body for several minutes even with incrementing msg-ids,
 		// while still narrow enough that an *intentional* re-send 15+ min
@@ -182,6 +203,7 @@ func New(opts Options) (*Server, error) {
 		// polite traffic — normal stations rarely exceed 5/min.
 		srcLimiter: newSourceRateLimiter(30, 15*time.Minute),
 		stats:      newStatsCounters(),
+		msgTracker: gate.NewMessagedRecipientTracker(30 * time.Minute),
 	}
 	s.is = igate.New(st, b)
 	s.beacon = beacon.New(st, s.rf, b)
@@ -199,6 +221,14 @@ func (s *Server) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func(start time.Time) {
+				if ctx.Err() != nil {
+					log.Printf("shutdown: spawn %s exited after %s", name, time.Since(start).Round(10*time.Millisecond))
+				}
+			}(time.Now())
+			// Capture shutdown start so the exit log reports elapsed since
+			// shutdown began, not since program start.
+			var shutdownStart time.Time
 			for ctx.Err() == nil {
 				func() {
 					defer func() {
@@ -208,14 +238,17 @@ func (s *Server) Run(ctx context.Context) error {
 					}()
 					fn(ctx)
 				}()
-				// If fn returned without panic, exit the supervisor loop.
-				// recover() only fires if it panicked.
 				if ctx.Err() != nil {
+					if shutdownStart.IsZero() {
+						shutdownStart = time.Now()
+					}
 					return
 				}
-				// Brief pause before restart to avoid panic-spin.
 				select {
 				case <-ctx.Done():
+					if shutdownStart.IsZero() {
+						shutdownStart = time.Now()
+					}
 					return
 				case <-time.After(2 * time.Second):
 				}
@@ -238,6 +271,7 @@ func (s *Server) Run(ctx context.Context) error {
 	spawn("parseLoop", s.parseLoop)
 	spawn("pruner", s.runPruner)
 	spawn("wdraftsJanitor", s.wdraftsJanitor)
+	spawn("pairsJanitor", s.pairsJanitor)
 	spawn("msgRetries", s.runRetryWorker)
 
 	srv := &http.Server{
@@ -257,20 +291,44 @@ func (s *Server) Run(ctx context.Context) error {
 		if err != http.ErrServerClosed {
 			// Drain background goroutines before returning.
 			<-ctx.Done()
+			s.viscous.Stop()
 			wg.Wait()
 			_ = s.store.Close()
 			return err
 		}
 	case <-ctx.Done():
+		log.Printf("shutdown: signal received, draining…")
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutCtx)
+		log.Printf("shutdown: http server stopped, waiting for goroutines…")
 	}
+	// Stop pending fill-in-digi timers so they don't fire against a
+	// torn-down RF subsystem during the wg.Wait() window below.
+	s.viscous.Stop()
 	// Block until all background goroutines have actually exited before closing
 	// the SQLite handle — prevents store writes against a closed DB.
 	wg.Wait()
 	_ = s.store.Close()
 	return nil
+}
+
+// pairsJanitor prunes stale Bluetooth pair-attempt jobs from the in-flight
+// map. Without this, every authenticated user who started a pair attempt
+// (or closed the tab mid-pair) leaves a job + cancel closure + 45s timer
+// context in memory until process restart — slow leak, exploitable by
+// repeated POSTs to /setup/save/tnc.
+func (s *Server) pairsJanitor(ctx context.Context) {
+	tick := time.NewTicker(5 * time.Minute)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			s.pairs.gc()
+		}
+	}
 }
 
 // wdraftsJanitor prunes expired wizard drafts every 5 minutes.
@@ -391,7 +449,7 @@ func (s *Server) parseLoop(ctx context.Context) {
 			if pkt.Frame.Origin == ax25.SrcIS && pkt.Decoded.IsMessage {
 				toUs := pkt.Decoded.MsgTo != "" && strings.EqualFold(pkt.Decoded.MsgTo, snap.Callsign)
 				toLocal := pkt.Decoded.MsgTo != "" &&
-					s.store.HeardOnRF(pkt.Decoded.MsgTo, time.Now().Add(-2*time.Hour))
+					s.store.HeardOnRF(pkt.Decoded.MsgTo, time.Now().Add(-recentRFWindow(snap)))
 				if toUs || toLocal {
 					showOnDashboard = true
 				}
@@ -399,7 +457,12 @@ func (s *Server) parseLoop(ctx context.Context) {
 			if showOnDashboard {
 				s.mu.Lock()
 				if len(s.recent) == recentCap {
-					s.recent = s.recent[1:]
+					// Shift in-place to reclaim slot 0 without allocating
+					// (the previous `s.recent = s.recent[1:]` slid the
+					// header forward and let the backing array grow
+					// unbounded over time).
+					copy(s.recent, s.recent[1:])
+					s.recent = s.recent[:recentCap-1]
 				}
 				s.recent = append(s.recent, pkt)
 				s.recentNextID++
@@ -488,7 +551,7 @@ func (s *Server) parseLoop(ctx context.Context) {
 				//   - bulletins (recipient prefix "BLN")
 				//   - self-addressed messages (telemetry/status to self)
 				//   - everything not involving us as source or dest
-				if pkt.Decoded.IsMessage && !pkt.Decoded.IsAck {
+				if pkt.Decoded.IsMessage && !pkt.Decoded.IsAck && !pkt.Decoded.IsRej {
 					bodyUp := strings.ToUpper(pkt.Decoded.MsgBody)
 					isTelemCfg := strings.HasPrefix(bodyUp, "PARM.") ||
 						strings.HasPrefix(bodyUp, "UNIT.") ||
@@ -564,6 +627,26 @@ func (s *Server) parseLoop(ctx context.Context) {
 						s.retries.Remove(id)
 					}
 				}
+				if pkt.Decoded.IsRej {
+					// Peer refused the message. Stop retrying (same as ack
+					// at the protocol level) but mark the row as rejected so
+					// the UI can distinguish delivered from refused.
+					id, _ := s.store.MarkRej(pkt.Decoded.MsgTo, pkt.Frame.Src, pkt.Decoded.AckedID)
+					if id > 0 {
+						s.retries.Remove(id)
+					}
+				}
+				if pkt.Decoded.ReplyAckID != "" && pkt.Decoded.IsMessage {
+					// APRS 1.1 piggyback ack — the inbound message also acks
+					// our prior outgoing msgID. Dequeue retries the same way
+					// a standalone ack does. Source/dest are swapped relative
+					// to a normal ack: pkt.Frame.Src is the peer, pkt.Decoded.MsgTo
+					// is us.
+					id, _ := s.store.MarkAck(pkt.Decoded.MsgTo, pkt.Frame.Src, pkt.Decoded.ReplyAckID)
+					if id > 0 {
+						s.retries.Remove(id)
+					}
+				}
 			}
 
 			if showOnDashboard {
@@ -571,9 +654,11 @@ func (s *Server) parseLoop(ctx context.Context) {
 			}
 
 			heardOnRF := func(call string) bool {
-				return s.store.HeardOnRF(call, time.Now().Add(-2*time.Hour))
+				return s.store.HeardOnRF(call, time.Now().Add(-recentRFWindow(snap)))
 			}
-			for _, a := range gate.Decide(pkt, snap, heardOnRF) {
+			// Answer ?IGATE? / ?APRS? general queries (RF-side only, per spec).
+			s.maybeAnswerQuery(ctx, pkt, snap)
+			for _, a := range gate.Decide(pkt, snap, heardOnRF, s.msgTracker) {
 				switch a.Kind {
 				case gate.SendIS:
 					if err := s.is.Send(a.Payload); err != nil {
@@ -587,11 +672,15 @@ func (s *Server) parseLoop(ctx context.Context) {
 						// content shows up on RF inside the window.
 						s.enqueueViscous(a, pkt)
 					} else if err := s.dispatchSendRF(a); err != nil {
-						log.Printf("gate: SendRF failed: %v (%s)", err, a.Reason)
+						if !errors.Is(err, rf.ErrTXDisabled) {
+							log.Printf("gate: SendRF failed: %v (%s)", err, a.Reason)
+						}
 					} else {
 						s.stats.sentRF.Add(1)
 						if strings.HasPrefix(a.Reason, "digi ") || strings.HasPrefix(a.Reason, "preempt") {
 							s.stats.digipeats.Add(1)
+						} else if strings.HasPrefix(a.Reason, "IS→RF msg→") {
+							s.stats.igateMsgsRF.Add(1)
 						}
 						log.Printf("gate: TX %s", a.Reason)
 					}
@@ -729,7 +818,9 @@ func (s *Server) enqueueViscous(a gate.Action, pkt aprs.Packet) {
 	key := pkt.Frame.Src + ">" + pkt.Frame.Dest + ":" + string(pkt.Frame.Info)
 	queued := s.viscous.enqueue(key, a, func(action gate.Action) {
 		if err := s.dispatchSendRF(action); err != nil {
-			log.Printf("gate: viscous SendRF failed: %v (%s)", err, action.Reason)
+			if !errors.Is(err, rf.ErrTXDisabled) {
+				log.Printf("gate: viscous SendRF failed: %v (%s)", err, action.Reason)
+			}
 		} else {
 			log.Printf("gate: TX %s (viscous fired — no other digi handled it)", action.Reason)
 		}
@@ -890,6 +981,10 @@ func (s *Server) common(title string, r *http.Request) map[string]any {
 		"Authed":           true,
 		"DefaultPassword":  s.state.IsDefaultPassword(),
 		"Theme":            snap.Theme,
+		"TZ":               snap.Timezone,
+		"TF":               snap.TimeFormat,
+		"ServerTZ":         time.Local.String(),
+		"CustomTZ":         snap.Timezone != "" && !isCuratedTZ(snap.Timezone),
 		"St":               snap,
 		"RFConnected":      s.rf.Connected(),
 		"ISConnected":      s.is.Connected(),
@@ -899,6 +994,7 @@ func (s *Server) common(title string, r *http.Request) map[string]any {
 		"ISLastErrorAt":    isErrAt,
 		"RFLastError":      rfErr,
 		"RFLastErrorAt":    rfErrAt,
+		"TXDisabled":       !snap.TXEnable && snap.TNCKind != state.TNCNone,
 		"Version":          mainVersion,
 	}
 	if r != nil {
@@ -909,9 +1005,102 @@ func (s *Server) common(title string, r *http.Request) map[string]any {
 	return data
 }
 
+// resolveTZ returns the *time.Location for the configured timezone string.
+// Empty / invalid falls back to time.Local. Cached for the common case where
+// the same name is looked up many times per render cycle.
+var (
+	tzCacheMu sync.RWMutex
+	tzCache   = map[string]*time.Location{}
+)
+
+// curatedTZ matches the dropdown options in settings.html — kept here so
+// the template can render a "Custom" optgroup when the operator's saved
+// value isn't one of the curated entries (e.g. set via state.json directly).
+var curatedTZ = map[string]struct{}{
+	"UTC":                 {},
+	"America/New_York":    {},
+	"America/Chicago":     {},
+	"America/Denver":      {},
+	"America/Phoenix":     {},
+	"America/Los_Angeles": {},
+	"America/Anchorage":   {},
+	"America/Honolulu":    {},
+	"America/Toronto":     {},
+	"America/Mexico_City": {},
+	"America/Sao_Paulo":   {},
+	"Europe/London":       {},
+	"Europe/Paris":        {},
+	"Europe/Berlin":       {},
+	"Europe/Madrid":       {},
+	"Europe/Rome":         {},
+	"Europe/Amsterdam":    {},
+	"Europe/Stockholm":    {},
+	"Europe/Helsinki":     {},
+	"Europe/Athens":       {},
+	"Europe/Moscow":       {},
+	"Africa/Cairo":        {},
+	"Africa/Johannesburg": {},
+	"Asia/Dubai":          {},
+	"Asia/Kolkata":        {},
+	"Asia/Bangkok":        {},
+	"Asia/Singapore":      {},
+	"Asia/Hong_Kong":      {},
+	"Asia/Tokyo":          {},
+	"Asia/Seoul":          {},
+	"Australia/Perth":     {},
+	"Australia/Sydney":    {},
+	"Pacific/Auckland":    {},
+}
+
+func isCuratedTZ(name string) bool {
+	_, ok := curatedTZ[name]
+	return ok
+}
+
+func resolveTZ(name string) *time.Location {
+	if name == "" {
+		return time.Local
+	}
+	tzCacheMu.RLock()
+	loc, ok := tzCache[name]
+	tzCacheMu.RUnlock()
+	if ok {
+		return loc
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return time.Local
+	}
+	tzCacheMu.Lock()
+	tzCache[name] = loc
+	tzCacheMu.Unlock()
+	return loc
+}
+
+// clockLayout / datetimeLayout return Go time-format strings for the
+// operator's chosen 12h/24h preference.
+func clockLayout(tf string) string {
+	if tf == "12h" {
+		return "3:04:05 PM"
+	}
+	return "15:04:05"
+}
+func datetimeLayout(tf string) string {
+	if tf == "12h" {
+		return "2006-01-02 3:04:05 PM"
+	}
+	return "2006-01-02 15:04:05"
+}
+
 // funcMap is template helpers.
 var funcMap = template.FuncMap{
 	"timeFormat": func(t time.Time, layout string) string { return t.Format(layout) },
+	"fmtClock": func(t time.Time, tz string, tf string) string {
+		return t.In(resolveTZ(tz)).Format(clockLayout(tf))
+	},
+	"fmtDateTime": func(t time.Time, tz string, tf string) string {
+		return t.In(resolveTZ(tz)).Format(datetimeLayout(tf))
+	},
 	"ago": func(t time.Time) string {
 		d := time.Since(t).Round(time.Second)
 		switch {
@@ -926,8 +1115,60 @@ var funcMap = template.FuncMap{
 		}
 	},
 	"join":   strings.Join,
+	"callsignBase": func(s string) string {
+		if i := strings.IndexByte(s, '-'); i >= 0 {
+			return s[:i]
+		}
+		return s
+	},
+	"callsignSSID": func(s string) string {
+		if i := strings.IndexByte(s, '-'); i >= 0 {
+			return s[i+1:]
+		}
+		return "0"
+	},
+	"intSeq": func(lo, hi int) []int {
+		if hi < lo {
+			return nil
+		}
+		out := make([]int, 0, hi-lo+1)
+		for n := lo; n <= hi; n++ {
+			out = append(out, n)
+		}
+		return out
+	},
 	"unix":   func(t time.Time) int64 { return t.Unix() },
 	"add":    func(a, b int) int { return a + b },
+	// telemEqn formats an APRS telemetry channel equation "y = a·x² + b·x + c"
+	// in a human-readable form, dropping zero terms so common simple
+	// linear conversions (most stations use just b≠0) read cleanly.
+	"telemEqn": func(coeffs [5][3]float64, idx int) string {
+		a, b, c := coeffs[idx][0], coeffs[idx][1], coeffs[idx][2]
+		if a == 0 && b == 0 && c == 0 {
+			return ""
+		}
+		parts := []string{}
+		if a != 0 {
+			parts = append(parts, fmt.Sprintf("%gx²", a))
+		}
+		if b != 0 {
+			if len(parts) > 0 && b > 0 {
+				parts = append(parts, fmt.Sprintf("+ %gx", b))
+			} else if b == 1 {
+				parts = append(parts, "x")
+			} else {
+				parts = append(parts, fmt.Sprintf("%gx", b))
+			}
+		}
+		if c != 0 {
+			if len(parts) > 0 && c > 0 {
+				parts = append(parts, fmt.Sprintf("+ %g", c))
+			} else {
+				parts = append(parts, fmt.Sprintf("%g", c))
+			}
+		}
+		return strings.Join(parts, " ")
+	},
 	"div": func(a, b int) int {
 		if b == 0 {
 			return 0
@@ -1005,38 +1246,50 @@ var funcMap = template.FuncMap{
 		return m
 	},
 	"eqByte": func(b byte, s string) bool { return len(s) > 0 && s[0] == b },
-	"aprsIcon": func(sym string) template.HTML {
-		if len(sym) < 2 {
-			return ""
+	"aprsIcon":      func(sym string) template.HTML { return renderAPRSIcon(sym, "") },
+	"aprsIconLarge": func(sym string) template.HTML { return renderAPRSIcon(sym, "large") },
+}
+
+// renderAPRSIcon emits the HTML for an APRS symbol from the hessu/aprs-symbols
+// 48px sprite sheets, rendered at 24 logical pixels (default) or 48 logical
+// pixels (size="large", for hero contexts like the station-detail header).
+func renderAPRSIcon(sym, size string) template.HTML {
+	if len(sym) < 2 {
+		return ""
+	}
+	t, c := sym[0], sym[1]
+	if c < 0x21 || c > 0x7e {
+		return ""
+	}
+	sprite := "1"
+	if t == '/' {
+		sprite = "0"
+	}
+	idx := int(c) - 0x21
+	x := -((idx % 16) * 24)
+	y := -((idx / 16) * 24)
+	cls := "aprs-sym"
+	wrapCls := "aprs-sym-wrap"
+	if size == "large" {
+		cls += " large"
+		wrapCls += " large"
+	}
+	html := fmt.Sprintf(
+		`<span class="%s" title="%s" style="background-image:url(/static/aprs-symbols-48-%s.png);background-position:%dpx %dpx"></span>`,
+		cls, template.HTMLEscapeString(sym), sprite, x, y,
+	)
+	if t != '/' && t != '\\' {
+		oc := int(t) - 0x21
+		if oc >= 0 && oc < 16*6 {
+			ox := -((oc % 16) * 24)
+			oy := -((oc / 16) * 24)
+			html = fmt.Sprintf(
+				`<span class="%s" title="%s"><span class="aprs-sym" style="background-image:url(/static/aprs-symbols-48-%s.png);background-position:%dpx %dpx"></span><span class="aprs-sym-overlay" style="background-image:url(/static/aprs-symbols-48-2.png);background-position:%dpx %dpx"></span></span>`,
+				wrapCls, template.HTMLEscapeString(sym), sprite, x, y, ox, oy,
+			)
 		}
-		t, c := sym[0], sym[1]
-		if c < 0x21 || c > 0x7e {
-			return ""
-		}
-		sprite := "1"
-		if t == '/' {
-			sprite = "0"
-		}
-		idx := int(c) - 0x21
-		x := -((idx % 16) * 24)
-		y := -((idx / 16) * 24)
-		html := fmt.Sprintf(
-			`<span class="aprs-sym" title="%s" style="background-image:url(/static/aprs-symbols-24-%s.png);background-position:%dpx %dpx"></span>`,
-			template.HTMLEscapeString(sym), sprite, x, y,
-		)
-		if t != '/' && t != '\\' {
-			oc := int(t) - 0x21
-			if oc >= 0 && oc < 16*6 {
-				ox := -((oc % 16) * 24)
-				oy := -((oc / 16) * 24)
-				html = fmt.Sprintf(
-					`<span class="aprs-sym-wrap" title="%s"><span class="aprs-sym" style="background-image:url(/static/aprs-symbols-24-%s.png);background-position:%dpx %dpx"></span><span class="aprs-sym-overlay" style="background-image:url(/static/aprs-symbols-24-2.png);background-position:%dpx %dpx"></span></span>`,
-					template.HTMLEscapeString(sym), sprite, x, y, ox, oy,
-				)
-			}
-		}
-		return template.HTML(html)
-	},
+	}
+	return template.HTML(html)
 }
 
 // maxIntakeDistKm is the great-circle distance beyond which an inbound RF

@@ -47,6 +47,11 @@ type RF struct {
 	lastErrorAt   time.Time
 	txCh          chan []byte
 	sessionCancel context.CancelFunc
+
+	// silentDrop is set when dropSession was called by the state-subscriber
+	// (self-inflicted teardown after a settings save) so the resulting read
+	// error isn't surfaced as lastError to the UI.
+	silentDrop bool
 }
 
 // LastError returns the most recent rf session error and its timestamp.
@@ -100,17 +105,40 @@ func (r *RF) TX(ax25Bytes []byte) error {
 
 // Run is the main loop. Watches state for TNC config changes; when the kind /
 // device / addr changes it drops the current connection and re-dials.
+//
+// Returns only after the BT supervisor and state-subscriber goroutines have
+// exited — callers can `wg.Wait()` on this and trust that no rf goroutine
+// is still running. Important for clean shutdown: a leaked subscriber would
+// silently drain state-change events past process exit; a leaked bt
+// supervisor would race the OS reaping its `rfcomm`/`bluetoothctl` subprocs.
 func (r *RF) Run(ctx context.Context) {
+	var subWG sync.WaitGroup
+	subWG.Add(2)
+
 	// Bluetooth supervisor runs independently so the BT link stays up even when
 	// the read/write session is bouncing.
-	go r.bt.Run(ctx)
+	go func() {
+		defer subWG.Done()
+		r.bt.Run(ctx)
+	}()
 
 	stateCh, cancelSub := r.st.Subscribe()
+	// Defer ordering matters: defers run LIFO. We need cancelSub() (which
+	// closes stateCh and unblocks the goroutine below) to run BEFORE
+	// subWG.Wait(). Register Wait first → it runs last; register cancelSub
+	// second → it runs first. Reversing this causes a shutdown deadlock
+	// because Wait would block forever on a goroutine that's still ranging
+	// over an open channel.
+	defer subWG.Wait()
 	defer cancelSub()
 
 	go func() {
+		defer subWG.Done()
 		for snap := range stateCh {
 			_ = snap
+			r.mu.Lock()
+			r.silentDrop = true
+			r.mu.Unlock()
 			r.dropSession()
 		}
 	}()
@@ -127,11 +155,19 @@ func (r *RF) Run(ctx context.Context) {
 			continue
 		}
 		if err := r.session(ctx, snap); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("rf: session: %v (retry in %s)", err, backoff)
 			r.mu.Lock()
-			r.lastError = err.Error()
-			r.lastErrorAt = time.Now()
+			silent := r.silentDrop
+			r.silentDrop = false
+			if !silent {
+				r.lastError = err.Error()
+				r.lastErrorAt = time.Now()
+			}
 			r.mu.Unlock()
+			if silent {
+				log.Printf("rf: session ended after settings change (retry in %s)", backoff)
+			} else {
+				log.Printf("rf: session: %v (retry in %s)", err, backoff)
+			}
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
@@ -182,7 +218,19 @@ func (r *RF) session(parent context.Context, snap state.State) error {
 		if baud == 0 && !rfcommDevRE.MatchString(snap.TNCSerial) {
 			baud = 9600 // sensible default for real serial ports
 		}
-		rw, err = openSerial(snap.TNCSerial, baud)
+		var f *os.File
+		f, err = openSerial(snap.TNCSerial, baud)
+		if err == nil {
+			// Wrap the tty fd in a context-aware reader. Without this,
+			// shutting down a session blocked in read(/dev/rfcomm0)
+			// takes 10+ seconds while the kernel waits for the bluez
+			// L2CAP teardown to deliver a HUP. The wrapper polls with
+			// a 200ms timeout and checks ctx between polls.
+			rw, err = newSerialConn(ctx, f)
+			if err != nil {
+				_ = f.Close()
+			}
+		}
 		iface = snap.TNCSerial
 	case state.TNCTCP:
 		if snap.TNCAddr == "" {
@@ -197,10 +245,47 @@ func (r *RF) session(parent context.Context, snap state.State) error {
 		return err
 	}
 	defer rw.Close()
+	// Send a lone FEND on disconnect to terminate any in-flight KISS frame
+	// on the TNC side, forcing it out of capture mode (and dropping PTT
+	// if it was mid-TX). FEND between frames is a no-op, so this is safe
+	// to fire unconditionally and is the recommended recovery against
+	// stuck-PTT scenarios where the TNC is waiting for a closing FEND
+	// that we'll never send because we're going down.
+	//
+	// CRITICAL: the write must be bounded by a timeout, not unbounded.
+	// On a wedged BT/serial link the underlying fd's write can block
+	// indefinitely; an unbounded defer here makes session() never return,
+	// which makes rf.Run() never return, which deadlocks shutdown until
+	// systemd SIGKILLs the process 90s later. We accept a leaked write
+	// goroutine in the worst case — process is exiting anyway.
+	defer func() {
+		done := make(chan struct{})
+		go func() {
+			_, _ = rw.Write([]byte{ax25.FEND})
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(500 * time.Millisecond):
+		}
+	}()
+	// Same byte at connect flushes any stale half-frame from a prior crash.
+	// Bounded the same way for the same reason.
+	connectDone := make(chan struct{})
+	go func() {
+		_, _ = rw.Write([]byte{ax25.FEND})
+		close(connectDone)
+	}()
+	select {
+	case <-connectDone:
+	case <-time.After(500 * time.Millisecond):
+		log.Printf("rf: kiss flush on connect: write blocked >500ms — continuing")
+	}
 
 	r.mu.Lock()
 	r.connected = true
 	r.iface = iface
+	r.lastError = ""
 	r.mu.Unlock()
 	defer func() {
 		r.mu.Lock()
@@ -210,6 +295,54 @@ func (r *RF) session(parent context.Context, snap state.State) error {
 
 	log.Printf("rf: connected to %s (%s)", iface, snap.TNCKind)
 
+	// Send KISS configuration parameters (TXDelay/Persist/SlotTime/TXTail)
+	// if configured. Modern soundmodem/KISS TNCs honor these; legacy hardware
+	// silently ignores them. Values are user-configurable in advanced TNC
+	// settings; 0 means "don't send the command, defer to TNC's own default".
+	sendKissParam := func(cmd byte, ms int, divisor int, name string) {
+		if ms <= 0 {
+			return
+		}
+		v := ms / divisor
+		if v < 0 {
+			v = 0
+		}
+		if v > 255 {
+			v = 255
+		}
+		if _, werr := rw.Write(ax25.EncodeKISSParam(cmd, byte(v))); werr != nil {
+			log.Printf("rf: kiss %s: %v", name, werr)
+		}
+	}
+	sendKissParam(ax25.KISSCmdTXDelay, snap.TNCTXDelayMs, 10, "TXDELAY")
+	if snap.TNCPersist > 0 {
+		v := snap.TNCPersist
+		if v > 255 {
+			v = 255
+		}
+		if _, werr := rw.Write(ax25.EncodeKISSParam(ax25.KISSCmdPersist, byte(v))); werr != nil {
+			log.Printf("rf: kiss PERSIST: %v", werr)
+		}
+	}
+	sendKissParam(ax25.KISSCmdSlotTime, snap.TNCSlotTimeMs, 10, "SLOTTIME")
+	sendKissParam(ax25.KISSCmdTXTail, snap.TNCTXTailMs, 10, "TXTAIL")
+
+	// Context watcher: when ctx cancels (parent shutdown or dropSession),
+	// close the underlying fd. Raw reads on /dev/rfcomm0 or a TCP socket
+	// don't honor ctx — only closing the file unblocks them. Without
+	// this, readLoop blocks until the next byte arrives (could be hours
+	// on an idle channel), preventing graceful shutdown and triggering
+	// systemd's SIGTERM timeout → SIGKILL on every deploy.
+	stopWatcher := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = rw.Close()
+		case <-stopWatcher:
+		}
+	}()
+	defer close(stopWatcher)
+
 	// Drain TX queue in a goroutine while we read.
 	writeDone := make(chan error, 1)
 	go func() {
@@ -218,9 +351,6 @@ func (r *RF) session(parent context.Context, snap state.State) error {
 
 	readErr := r.readLoop(ctx, rw, iface)
 	cancel()
-	// Close the underlying ReadWriteCloser so a wedged Write inside writeLoop
-	// unblocks. exec.CommandContext-style ctx-cancel won't help with raw FD
-	// blocking writes; closing the fd is the only reliable interrupt.
 	_ = rw.Close()
 	<-writeDone
 	return readErr
@@ -284,7 +414,7 @@ func (r *RF) writeLoop(ctx context.Context, wr io.Writer) error {
 
 // openSerial opens a TTY device and puts it in raw mode at the given baud.
 // baud=0 leaves the existing speed untouched (correct for RFCOMM).
-func openSerial(path string, baud int) (io.ReadWriteCloser, error) {
+func openSerial(path string, baud int) (*os.File, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOCTTY, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)

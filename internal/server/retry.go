@@ -22,6 +22,7 @@ package server
 import (
 	"context"
 	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -75,8 +76,10 @@ func (q *retryQueue) Remove(id int64) *retryEntry {
 	return e
 }
 
-// due copies pointers to entries whose NextRetry is in the past. Returns a
-// new slice so the caller can iterate without holding the queue mutex.
+// due copies pointers to entries whose NextRetry is in the past. Returns
+// the slice sorted oldest-NextRetry-first so retries fire in the order they
+// became due — without the sort, map-iteration order is randomized and
+// users see retries reorder visually relative to each other.
 func (q *retryQueue) due(now time.Time) []*retryEntry {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -86,6 +89,9 @@ func (q *retryQueue) due(now time.Time) []*retryEntry {
 			out = append(out, e)
 		}
 	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].NextRetry.Before(out[j].NextRetry)
+	})
 	return out
 }
 

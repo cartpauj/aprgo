@@ -45,16 +45,35 @@ type Weather struct {
 	PressureSet    bool
 	LuminosityWm2  int  // W/m²
 	LuminositySet  bool
+	// Snow is in WHOLE INCHES per APRS spec-wx.txt — NOT hundredths like the
+	// rain fields. Quote: "S001 is one inch. S1.5 is 1.5 inches. S010 is 10
+	// inches." Don't follow the r/p/P precedent here.
+	SnowIn         int  // whole inches over 24 hr (s010 → 10)
+	SnowSet        bool
+
+	// Indoor sensor data (Davis / Peet Bros stations commonly send both
+	// outdoor and indoor readings). Not part of APRS101 — vendor extension
+	// using uppercase letters that don't collide with the standard set.
+	//   T<NNN>  indoor temperature (°F)
+	//   I<NN>   indoor humidity (%, 00=100%)
+	TempInF        int  // °F, can be negative
+	TempInSet      bool
+	HumidityInPct  int
+	HumidityInSet  bool
 }
 
 // Wind direction/speed regex: NNN/NNN at the start of the data after the
 // symbol. We accept a leading "_" or "/" or absence (Mic-E weather reports
 // can have CSE/SPD at the start with no leader).
 var (
-	// CCC/SSS at the start (or somewhere reasonable). For "_" weather
-	// reports the wind tuple is the first 7 chars of the comment.
-	weatherWindRE = regexp.MustCompile(`(\d{3})/(\d{3})`)
-	weatherFieldRE = regexp.MustCompile(`([gtrpPhbslLs])(-?\d{2,5})`)
+	// CCC/SSS at offset 0 of the weather-data fragment. Per APRS101 Ch. 12 +
+	// Ch. 7, wind direction/speed is at a fixed position right after the `_`
+	// symbol (position+wx) or right after the MDHM timestamp (positionless
+	// wx). Spec also permits `...` (3 dots) for missing readings — accept
+	// both forms. Anchoring with `^` prevents false matches in free-form
+	// comments like "frequency 145.450/146.520 see you 100/200 at noon".
+	weatherWindRE = regexp.MustCompile(`^(\d{3}|\.{3})/(\d{3}|\.{3})`)
+	weatherFieldRE = regexp.MustCompile(`([gtTrpPhIbslLs])(-?\d{2,5})`)
 )
 
 // parseWeather scans a position-comment fragment for weather fields. Returns
@@ -89,6 +108,24 @@ func parseWeather(s string) (*Weather, string) {
 				(len(valStr) >= 3 && valStr[0] == '-') {
 				w.TempF = val
 				w.TempSet = true
+				count++
+			}
+		case "T":
+			// Davis/Peet Bros indoor temperature. Same format as `t`.
+			if (len(valStr) == 3 && valStr[0] != '-') ||
+				(len(valStr) >= 3 && valStr[0] == '-') {
+				w.TempInF = val
+				w.TempInSet = true
+				count++
+			}
+		case "I":
+			// Davis/Peet Bros indoor humidity. Same format as `h`.
+			if len(valStr) == 2 {
+				if val == 0 {
+					val = 100
+				}
+				w.HumidityInPct = val
+				w.HumidityInSet = true
 				count++
 			}
 		case "r":
@@ -136,25 +173,42 @@ func parseWeather(s string) (*Weather, string) {
 				w.LuminositySet = true
 				count++
 			}
+		case "s":
+			// APRS spec-wx.txt: sNNN = snowfall in WHOLE INCHES over 24 hr.
+			// Different unit from rain (`r`/`p`/`P` use hundredths). Spec
+			// example: "s010 is 10 inches." Decimal forms like "s1.5" are
+			// also defined but cannot be matched by our \d{2,5} regex; only
+			// the integer form is parsed here.
+			if len(valStr) == 3 {
+				w.SnowIn = val
+				w.SnowSet = true
+				count++
+			}
 		}
 	}
 	// Wind CCC/SSS is matched as a separate regex because the field key is
 	// implicit (positional). Only honored when at least one other weather
 	// field was present in the same string, so a bare "012/345" in a
 	// comment doesn't get mis-tagged as wind.
+	windPresent := false
 	if count >= 1 {
 		if m := weatherWindRE.FindStringSubmatchIndex(s); m != nil {
-			dir, _ := strconv.Atoi(s[m[2]:m[3]])
-			spd, _ := strconv.Atoi(s[m[4]:m[5]])
-			if dir <= 360 && spd <= 999 {
+			windPresent = true
+			dirRaw := s[m[2]:m[3]]
+			spdRaw := s[m[4]:m[5]]
+			// Per spec, `...` (three dots) means "value not reported".
+			// Skip the field rather than recording 0 as a real reading.
+			if dir, err := strconv.Atoi(dirRaw); err == nil && dir <= 360 {
 				w.WindDirDeg = dir
-				w.WindSpeedMPH = spd
 				w.WindDirSet = true
+			}
+			if spd, err := strconv.Atoi(spdRaw); err == nil && spd <= 999 {
+				w.WindSpeedMPH = spd
 				w.WindSpeedSet = true
 			}
 		}
 	}
-	if count < 2 && !(count == 1 && w.WindDirSet) {
+	if count < 2 && !(count == 1 && windPresent) {
 		return nil, s
 	}
 	// Strip matched weather fragments from the comment. We rebuild the

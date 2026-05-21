@@ -18,7 +18,7 @@ import (
 )
 
 // Version is set via -ldflags="-X main.Version=…" at build time.
-var Version = "dev"
+var Version = "1.0.0"
 
 func main() {
 	listen := flag.String("listen", ":14439", "HTTP listen address")

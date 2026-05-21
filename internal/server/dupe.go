@@ -10,9 +10,10 @@ import (
 // used to suppress digipeat reflections. Anything seen within the window is
 // considered a duplicate.
 type dupeTable struct {
-	mu     sync.Mutex
-	window time.Duration
-	seen   map[[20]byte]time.Time
+	mu         sync.Mutex
+	window     time.Duration
+	seen       map[[20]byte]time.Time
+	lastGCSize int // size at last GC; only re-walk when it doubles
 }
 
 func newDupeTable(window time.Duration) *dupeTable {
@@ -30,13 +31,21 @@ func (d *dupeTable) CheckAndMark(key []byte) bool {
 		return true
 	}
 	d.seen[h] = now
-	// Opportunistic GC
-	if len(d.seen) > 512 {
+	// Opportunistic GC: walk the map only when it has grown substantially
+	// since the last sweep (default trigger 512, then doubles each time).
+	// Without this guard a busy parse loop would re-walk the map every
+	// packet once size > 512, hammering the contended dupe mutex.
+	trigger := d.lastGCSize * 2
+	if trigger < 512 {
+		trigger = 512
+	}
+	if len(d.seen) > trigger {
 		for k, t := range d.seen {
 			if now.Sub(t) > d.window {
 				delete(d.seen, k)
 			}
 		}
+		d.lastGCSize = len(d.seen)
 	}
 	return false
 }

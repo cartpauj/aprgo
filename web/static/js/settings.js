@@ -41,7 +41,7 @@
     var x = -((idx % 16) * 24);
     var y = -(Math.floor(idx / 16) * 24);
     var base =
-      '<span class="aprs-sym" style="background-image:url(/static/aprs-symbols-24-' +
+      '<span class="aprs-sym" style="background-image:url(/static/aprs-symbols-48-' +
       sprite + '.png);background-position:' + x + 'px ' + y + 'px;"></span>';
     // Overlay letter sprite for non-table-char first byte.
     if (code[0] !== "/" && code[0] !== "\\") {
@@ -50,7 +50,7 @@
       var oy = -(Math.floor(oc / 16) * 24);
       return (
         '<span class="aprs-sym-wrap">' + base +
-        '<span class="aprs-sym-overlay" style="background-image:url(/static/aprs-symbols-24-2.png);background-position:' +
+        '<span class="aprs-sym-overlay" style="background-image:url(/static/aprs-symbols-48-2.png);background-position:' +
         ox + 'px ' + oy + 'px;"></span></span>'
       );
     }
@@ -226,4 +226,87 @@
       setCustomVisible(false);
     }
   });
+})();
+
+// ─── Advanced-mode flag dependencies ────────────────────────────────────
+// Some gating/digi flags only do anything when others are on. e.g. you
+// can't "Gate IS → RF" without "Master TX enable", and "Viscous delay"
+// is meaningless without a fill-in digipeater to delay. Grey out the
+// dependents whose prerequisites aren't met; preserve their stored
+// values so the operator's intent survives a transient prerequisite
+// toggle. Re-evaluate on every checkbox change.
+(function () {
+  function input(name) {
+    return document.querySelector(
+      '.settings-section input[name="' + name + '"]'
+    );
+  }
+  function isOn(name) {
+    var el = input(name);
+    return !!(el && el.checked);
+  }
+  function setInactive(name, inactive, reason) {
+    var el = input(name);
+    if (!el) return;
+    var label = el.closest("label");
+    if (!label) return;
+    label.classList.toggle("is-inactive", inactive);
+    if (inactive) label.setAttribute("data-inactive-reason", reason);
+    else label.removeAttribute("data-inactive-reason");
+  }
+  function reconcile() {
+    var txOff = !isOn("tx_enable");
+    var offline = isOn("offline_mode");
+    var digi1 = isOn("digipeat_wide1");
+    var rfToIs = isOn("gate_rf_to_is");
+
+    // Audited against internal/gate/gate.go to make sure each rule
+    // reflects where the flag is actually consulted.
+
+    // Gate IS → RF: needs TX (to TX on radio) and IS (to receive).
+    setInactive("gate_is_to_rf", txOff || offline,
+      txOff ? "Master TX enable is off" : "Offline mode disables APRS-IS");
+
+    // Digipeaters: need TX.
+    setInactive("digipeat_wide1", txOff, "Master TX enable is off");
+    setInactive("digipeat_wide2", txOff, "Master TX enable is off");
+
+    // Gate RF → IS: needs IS connection. Doesn't need TX (uses TCP).
+    setInactive("gate_rf_to_is", offline, "Offline mode disables APRS-IS");
+
+    // Messaging-only is a filter on RF→IS gating (rfToISAction in
+    // gate.go:116). IS→RF already only allows messages by spec, so the
+    // flag has no effect on that direction. It's a no-op when there's
+    // no RF→IS gating to filter.
+    setInactive("messaging_only_mode", offline || !rfToIs,
+      offline ? "Offline mode disables APRS-IS" : "Gate RF → APRS-IS is off");
+
+    // Viscous delay only matters for WIDE1-1 fill-in packets (gate.go:254
+    // gates viscous on n==1). Inactive when WIDE1 digi is off or TX is off.
+    setInactive("viscous_delay", !digi1 || txOff,
+      txOff ? "Master TX enable is off" : "No fill-in digipeater to delay");
+
+    // Preemptive digipeat is sufficient on its own to enter the digipeat
+    // decision (gate.go:88 — `WIDE1 || WIDE2 || Preemptive`). So it does
+    // NOT require either WIDE flag — operator can run "preemptive-only"
+    // digi for explicit MYCALL paths. Only TX is required.
+    setInactive("preemptive_digipeat", txOff, "Master TX enable is off");
+
+    // Recent-RF window is consulted by both the IS→RF gate decision AND
+    // the dashboard's IS-side inclusion filter. Both require IS to be
+    // connected; only Offline mode makes it truly no-op.
+    setInactive("igate_recent_rf_minutes", offline, "Offline mode disables APRS-IS");
+  }
+  // Bind to every advanced-flag checkbox so any change re-evaluates the
+  // whole graph (some rules depend on combinations).
+  var names = [
+    "tx_enable", "gate_rf_to_is", "gate_is_to_rf",
+    "digipeat_wide1", "digipeat_wide2", "viscous_delay",
+    "offline_mode", "messaging_only_mode", "preemptive_digipeat",
+  ];
+  names.forEach(function (n) {
+    var el = input(n);
+    if (el) el.addEventListener("change", reconcile);
+  });
+  reconcile();
 })();

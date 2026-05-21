@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"aprgo/internal/state"
+	"aprgo/internal/tnc"
 )
 
 // btSupervisor keeps `rfcomm connect` alive whenever the configured TNC is a
@@ -26,6 +27,14 @@ type btSupervisor struct {
 	wantAddr string
 	wantDev  string
 	wantChan int
+
+	// discoveryRan ensures the "adopt the kernel's current rfcomm MAC"
+	// fallback only fires once, at startup, before we begin spawning
+	// `rfcomm connect` subprocesses. After that, running `rfcomm` while
+	// our own bind is mid-handshake can transiently report the local
+	// adapter MAC instead of the remote — we'd then update state with
+	// nonsense and trigger a feedback loop.
+	discoveryRan bool
 }
 
 func newBTSupervisor(st *state.Store) *btSupervisor {
@@ -62,6 +71,35 @@ func (b *btSupervisor) reconcile(ctx context.Context) {
 	if ch <= 0 {
 		ch = 1
 	}
+
+	// One-shot startup self-heal: if state has us pointed at an rfcomm
+	// device but no MAC, ask the kernel what's already bound there. The
+	// kernel state is stable here because we haven't spawned any
+	// `rfcomm connect` subprocesses yet (discoveryRan gates this to the
+	// first reconcile call only). After that, running `rfcomm` while our
+	// own bind is mid-handshake can transiently report the local adapter
+	// MAC instead of the remote — adopting that would brick things.
+	b.mu.Lock()
+	first := !b.discoveryRan
+	b.discoveryRan = true
+	b.mu.Unlock()
+	if first && snap.TNCKind == state.TNCSerial && rfcommDevRE.MatchString(dev) && !btAddrRE.MatchString(addr) {
+		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		discovered, _ := tnc.CurrentRfcommMAC(probeCtx, dev)
+		cancel()
+		if discovered != "" {
+			log.Printf("rf: btSupervisor: discovered MAC %s on %s — adopting into state", discovered, dev)
+			_ = b.st.Update(func(s *state.State) error {
+				s.TNCAddr = discovered
+				return nil
+			})
+			// state.Update fires a notify which schedules another
+			// reconcile — let that one re-evaluate with the fresh MAC.
+			return
+		}
+		log.Printf("rf: btSupervisor: inactive (TNCSerial=%s but no TNCAddr — assuming external rfcomm management, or operator needs to configure pairing)", dev)
+	}
+
 	want := snap.TNCKind == state.TNCSerial && rfcommDevRE.MatchString(dev) && btAddrRE.MatchString(addr)
 
 	b.mu.Lock()
@@ -90,6 +128,25 @@ func (b *btSupervisor) reconcile(ctx context.Context) {
 	go b.supervise(cctx, addr, dev, ch)
 }
 
+// disableBTSniff clears SNIFF from hci0's default link policy. SNIFF causes
+// the ACL to enter a low-power polled mode during idle; on flaky controllers
+// (notably Marvell SD8887 combo cards) the transitions in/out of sniff can
+// drop the link, forcing a full page+L2CAP+RFCOMM reconnect every few
+// minutes. The reconnect storm then poisons WiFi/BT coex on shared-SDIO
+// adapters. Disabling sniff costs ~microamps of idle power — negligible for
+// an iGate — and is safe on every controller. Failure is logged but ignored;
+// it's best-effort.
+func disableBTSniff(ctx context.Context) {
+	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(cctx, "hciconfig", "hci0", "lp", "rswitch,hold").CombinedOutput()
+	if err != nil {
+		log.Printf("rf: hciconfig hci0 lp rswitch,hold failed: %v (output: %s) — leaving adapter default policy unchanged", err, strings.TrimSpace(string(out)))
+		return
+	}
+	log.Printf("rf: disabled SNIFF on hci0 default link policy (Marvell/coex workaround)")
+}
+
 func (b *btSupervisor) stop() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -107,6 +164,7 @@ func (b *btSupervisor) supervise(ctx context.Context, addr, dev string, channel 
 		return
 	}
 	idx := m[1]
+	disableBTSniff(ctx)
 	backoff := time.Second
 	for ctx.Err() == nil {
 		// Release any stale binding first (idempotent — failure is fine).

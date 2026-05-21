@@ -1,11 +1,11 @@
 package server
 
 import (
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"html"
 	"html/template"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -119,7 +119,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.loginLimit.Success(ip)
-		s.auth.IssueCookie(w, user)
+		s.auth.IssueCookie(w, r, user)
 		next := validateNext(r.FormValue("next"))
 		http.Redirect(w, r, next, http.StatusFound)
 	default:
@@ -144,13 +144,151 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		rendered[i] = template.HTML(s.renderPacketHTML(packets[j]))
 	}
 	data := s.common("Dashboard", r)
-	data["St"] = s.state.Snapshot()
+	snap := s.state.Snapshot()
+	data["St"] = snap
 	data["RenderedPackets"] = rendered
 	data["FeedCursor"] = cursor
+	data["StatusCards"] = s.dashboardStatusCards(snap)
 	if r.URL.Query().Get("saved") == "1" {
 		data["Flash"] = "Settings saved."
 	}
 	s.render(w, "dashboard.html", data)
+}
+
+// statusCard is one tile on the dashboard's mode-aware status strip.
+// Tone drives the colored accent on the left edge: "ok" = green, "warn"
+// = amber, "err" = red, "" = neutral.
+type statusCard struct {
+	Label string // small uppercase eyebrow
+	Value string // big main value (or "● live" / "● verified" for connection cards)
+	Sub   string // dim secondary line below
+	Tone  string // "ok" / "warn" / "err" / "" — drives the left-edge accent color
+}
+
+// dashboardStatusCards picks the set of status cards to show on the
+// dashboard based on the operator's current mode. Each mode emphasizes
+// the stats that matter for its role — a digi cares about digipeat
+// counts but not IS-gated msg counts, a messaging-only iGate is the
+// opposite, etc. Cards order matters; first card sits leftmost.
+func (s *Server) dashboardStatusCards(snap state.State) []statusCard {
+	cards := []statusCard{}
+
+	// Connection cards are common to most modes (only Offline-digi skips IS).
+	rfConn := s.rf.Connected()
+	rfCard := statusCard{Label: "RF", Tone: "err", Value: "● disconnected"}
+	if snap.TNCKind == state.TNCNone {
+		rfCard = statusCard{Label: "RF", Tone: "", Value: "○ no TNC", Sub: "configure in Settings"}
+	} else if rfConn {
+		rfCard = statusCard{Label: "RF", Tone: "ok", Value: "● live", Sub: s.rf.IFace()}
+	} else {
+		rfCard.Sub = "see Settings"
+	}
+
+	var isCard statusCard
+	if !snap.OfflineMode {
+		isConn := s.is.Connected()
+		switch {
+		case !isConn:
+			isCard = statusCard{Label: "APRS-IS", Tone: "err", Value: "● disconnected"}
+		case s.is.Verification() == igate.VerificationUnverified:
+			isCard = statusCard{Label: "APRS-IS", Tone: "warn", Value: "● unverified", Sub: snap.Callsign}
+		case s.is.Verification() == igate.VerificationVerified:
+			isCard = statusCard{Label: "APRS-IS", Tone: "ok", Value: "● verified", Sub: snap.Callsign}
+		default:
+			isCard = statusCard{Label: "APRS-IS", Tone: "ok", Value: "● connecting", Sub: snap.Callsign}
+		}
+	}
+
+	// Stats lifted from the in-memory counters. Always read both atomic
+	// loads to a local before subtraction; #46 fix is in place but we
+	// follow the same pattern in case future code touches these.
+	rfToIS := s.stats.sentIS.Load()
+	isToRF := s.stats.igateMsgsRF.Load()
+	digi := s.stats.digipeats.Load()
+	beacons := s.stats.beacons.Load()
+	heardRF := s.stats.pktsRF.Load()
+
+	// All counts below are SESSION-lifetime (since process start). The
+	// dashboard is the at-a-glance live view; historical / daily stats
+	// live on /stats. Sub-line annotates this so the user isn't confused
+	// about scope.
+	gatedCard := statusCard{
+		Label: "GATED",
+		Value: fmt.Sprintf("%d ↑  %d ↓", rfToIS, isToRF),
+		Sub:   "RF→IS · IS→RF",
+	}
+	digiCard := statusCard{
+		Label: "DIGI",
+		Value: fmt.Sprintf("%d", digi),
+		Sub:   "session",
+	}
+	beaconCard := statusCard{
+		Label: "BEACONS",
+		Value: fmt.Sprintf("%d", beacons),
+		Sub:   "session",
+	}
+	heardCard := statusCard{
+		Label: "RF RX",
+		Value: fmt.Sprintf("%d", heardRF),
+		Sub:   "session",
+	}
+
+	// Per-mode layout. Each branch picks 3-5 cards in priority order.
+	// Modes that shouldn't surface a stat just leave it out — the user
+	// can dig into /stats for the full picture.
+	switch snap.Mode {
+	case state.ModeRXOnly:
+		// Listen + upload — no TX, no digi, no IS→RF.
+		cards = append(cards, rfCard)
+		if !snap.OfflineMode {
+			cards = append(cards, isCard)
+		}
+		cards = append(cards, statusCard{Label: "UPLOADED", Value: fmt.Sprintf("%d", rfToIS), Sub: "session"})
+		cards = append(cards, heardCard)
+
+	case state.ModeDigi, state.ModeOffline:
+		// Digi-first; IS card optional based on OfflineMode.
+		cards = append(cards, rfCard)
+		if !snap.OfflineMode {
+			cards = append(cards, isCard)
+		}
+		cards = append(cards, digiCard)
+		cards = append(cards, beaconCard)
+		cards = append(cards, heardCard)
+
+	case state.ModeMessaging:
+		// Selective-gate iGate: focus is gating counts.
+		cards = append(cards, rfCard)
+		if !snap.OfflineMode {
+			cards = append(cards, isCard)
+		}
+		cards = append(cards, gatedCard)
+		cards = append(cards, heardCard)
+
+	case state.ModeFillinIG, state.ModeTXIGate:
+		// Full iGate role — show RF/IS health + both directions of gating.
+		cards = append(cards, rfCard)
+		if !snap.OfflineMode {
+			cards = append(cards, isCard)
+		}
+		cards = append(cards, gatedCard)
+		if snap.Mode == state.ModeFillinIG {
+			cards = append(cards, digiCard)
+		}
+		cards = append(cards, heardCard)
+
+	default:
+		// Advanced or unset — show the works.
+		cards = append(cards, rfCard)
+		if !snap.OfflineMode {
+			cards = append(cards, isCard)
+		}
+		cards = append(cards, gatedCard)
+		cards = append(cards, digiCard)
+		cards = append(cards, beaconCard)
+		cards = append(cards, heardCard)
+	}
+	return cards
 }
 
 // handleFeedPoll is the dashboard live-feed AJAX endpoint. Clients send
@@ -186,7 +324,59 @@ func (s *Server) handleFeedPoll(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renderPacketHTML(pkt aprs.Packet) string {
-	ts := pkt.Frame.RxAt.Format("15:04:05")
+	return s.renderPacketHTMLWithConfig(pkt, nil)
+}
+
+// renderPacketHTMLWithConfig is the variant that applies a station's
+// telemetry config (PARM names + UNIT labels + EQNS coefficients) when
+// rendering T# packets — used by the station-detail page where we've
+// reconstructed the per-station config. The dashboard live-feed passes
+// nil and renders raw analog values.
+// feedSymbolHTML renders the APRS symbol as a small inline sprite for
+// the live-feed callsign cell. Returns empty when sym isn't a valid
+// 2-char symbol or contains non-printable chars. Mirrors the aprsIcon
+// template func at server.go but emits 16px-scaled sprite positions so
+// the row keeps its line height tight beside text.
+func feedSymbolHTML(sym string) string {
+	if len(sym) < 2 {
+		return ""
+	}
+	t, c := sym[0], sym[1]
+	if c < 0x21 || c > 0x7e {
+		return ""
+	}
+	sprite := "1"
+	if t == '/' {
+		sprite = "0"
+	}
+	// Sprite sheet is laid out 16 columns × 6 rows at the *native* 24px
+	// cell size. Our CSS scales background-size to 256×96 (16px cells),
+	// so the position offsets are computed at 16px stride to match.
+	const cell = 16
+	idx := int(c) - 0x21
+	x := -((idx % 16) * cell)
+	y := -((idx / 16) * cell)
+	out := fmt.Sprintf(
+		`<span class="feed-sym" title="%s" style="background-image:url(/static/aprs-symbols-48-%s.png);background-position:%dpx %dpx"></span>`,
+		html.EscapeString(sym), sprite, x, y,
+	)
+	if t != '/' && t != '\\' {
+		oc := int(t) - 0x21
+		if oc >= 0 && oc < 16*6 {
+			ox := -((oc % 16) * cell)
+			oy := -((oc / 16) * cell)
+			out = fmt.Sprintf(
+				`<span class="feed-sym-wrap">%s<span class="feed-sym-overlay" style="background-image:url(/static/aprs-symbols-48-2.png);background-position:%dpx %dpx"></span></span>`,
+				out, ox, oy,
+			)
+		}
+	}
+	return out
+}
+
+func (s *Server) renderPacketHTMLWithConfig(pkt aprs.Packet, tc *aprs.TelemConfig) string {
+	snap := s.state.Snapshot()
+	ts := pkt.Frame.RxAt.In(resolveTZ(snap.Timezone)).Format(clockLayout(snap.TimeFormat))
 	dirLabel := pkt.Frame.Origin.String()
 	// Distinct CSS class per origin so dashboard styling can color them
 	// differently: RF/IS in green-ish, TX in amber/orange so own
@@ -196,9 +386,14 @@ func (s *Server) renderPacketHTML(pkt aprs.Packet) string {
 		dirClass = "rx"
 	}
 	pathPart := renderPathHTML(strings.Join(pkt.Frame.Path, ","))
-	parsedInfo := parsedInfoHTML(pkt)
+	parsedInfo := parsedInfoHTMLWithConfig(pkt, tc)
 	rawInfo := html.EscapeString(string(pkt.Frame.Info))
-	srcLink := fmt.Sprintf(`<a class="src" href="/stations/%s">%s</a>`,
+	// Source callsign + APRS symbol icon (when one was decoded from the
+	// packet). Putting the icon to the left of the link gives the live
+	// feed the same visual scanability as the map — at a glance you can
+	// tell a car beacon from a weather station from a digi.
+	srcLink := fmt.Sprintf(`%s<a class="src" href="/stations/%s">%s</a>`,
+		feedSymbolHTML(pkt.Decoded.Symbol),
 		html.EscapeString(pkt.Frame.Src), html.EscapeString(pkt.Frame.Src))
 	// Device chip — derived from the AX.25 dest tocall via the embedded
 	// aprs-deviceid registry. Empty when we don't have a match.
@@ -207,11 +402,22 @@ func (s *Server) renderPacketHTML(pkt aprs.Packet) string {
 		devChip = fmt.Sprintf(` <span class="dev-chip" title="%s">%s</span>`,
 			html.EscapeString(dev.Tocall), html.EscapeString(dev.Display()))
 	}
+	// `parsed-line` is the styled row body (chips, pills, parsed info);
+	// `raw-line` is the literal TNC2 form. CSS toggles between them based
+	// on the `view-raw` body class so the operator sees a clean pure-text
+	// view in raw mode rather than the styled chrome with raw bytes
+	// substituted into one field.
+	rawTNC2 := html.EscapeString(string(pkt.Frame.Src))
+	rawTNC2 += "&gt;" + html.EscapeString(pkt.Frame.Dest)
+	if path := strings.Join(pkt.Frame.Path, ","); path != "" {
+		rawTNC2 += "," + html.EscapeString(path)
+	}
+	rawTNC2 += ":" + rawInfo
 	return fmt.Sprintf(
-		`<div class="pkt %s"><span class="t">%s</span> <span class="dir %s">%s</span> %s&gt;<span class="dst">%s</span>%s%s <span class="info-parsed">%s</span><span class="info-raw">%s</span></div>`,
+		`<div class="pkt %s"><span class="t">%s</span> <span class="dir %s">%s</span> <span class="parsed-line">%s&gt;<span class="dst">%s</span>%s%s <span class="info-parsed">%s</span></span><span class="raw-line">%s</span></div>`,
 		dirClass, ts, dirClass, dirLabel,
 		srcLink, html.EscapeString(pkt.Frame.Dest),
-		devChip, pathPart, parsedInfo, rawInfo,
+		devChip, pathPart, parsedInfo, rawTNC2,
 	)
 }
 
@@ -252,11 +458,35 @@ func renderPathHTML(raw string) string {
 }
 
 func parsedInfoHTML(pkt aprs.Packet) string {
+	return parsedInfoHTMLWithConfig(pkt, nil)
+}
+
+func parsedInfoHTMLWithConfig(pkt aprs.Packet, tc *aprs.TelemConfig) string {
 	d := pkt.Decoded
 	var b strings.Builder
 	wrote := false
+	// Object/Item name first — for `;` and `)` packets it's the most useful
+	// thing (typically a repeater identifier or WX station name) so put it
+	// in front of the position.
+	if d.ObjectName != "" {
+		label := d.ObjectName
+		if d.ObjectKilled {
+			label = label + " (killed)"
+		}
+		fmt.Fprintf(&b, `<span class="obj-name">⊙ %s</span>`, html.EscapeString(label))
+		wrote = true
+	}
+	// Telemetry-config messages: short chip describing the kind so operators
+	// can see what arrived without scanning the raw line. Detail rendering
+	// (channel labels applied to T# data) lives on the station-detail page.
+	if d.TelemConfig != nil {
+		fmt.Fprintf(&b, `<span class="telem-cfg">⚙ Telemetry %s → %s</span>`,
+			html.EscapeString(strings.ToUpper(d.TelemConfig.Kind)),
+			html.EscapeString(d.MsgTo))
+		wrote = true
+	}
 	if d.Lat != nil && d.Lon != nil {
-		fmt.Fprintf(&b, `<span class="pos">📍 %.4f, %.4f</span>`, *d.Lat, *d.Lon)
+		fmt.Fprintf(&b, ` <span class="pos">📍 %.4f, %.4f</span>`, *d.Lat, *d.Lon)
 		wrote = true
 	}
 	if d.SymbolName != "" {
@@ -276,6 +506,15 @@ func parsedInfoHTML(pkt aprs.Packet) string {
 	}
 	if d.Frequency != "" {
 		fmt.Fprintf(&b, ` <span class="freq">%s</span>`, html.EscapeString(d.Frequency))
+		wrote = true
+	}
+	if d.FreqTone != "" {
+		// CTCSS tone (Hz) or DCS code (D-prefixed). Distinct chip style.
+		fmt.Fprintf(&b, ` <span class="freq-extra">T %s</span>`, html.EscapeString(d.FreqTone))
+		wrote = true
+	}
+	if d.FreqOffset != "" {
+		fmt.Fprintf(&b, ` <span class="freq-extra">Δ %s</span>`, html.EscapeString(d.FreqOffset))
 		wrote = true
 	}
 	if d.Status != "" {
@@ -308,6 +547,13 @@ func parsedInfoHTML(pkt aprs.Packet) string {
 		}
 		return fmt.Sprintf(`<span class="ack">✓ ACK %s</span>`, html.EscapeString(d.AckedID))
 	}
+	if d.IsRej {
+		if d.MsgTo != "" {
+			return fmt.Sprintf(`<span class="rej">✗ REJ %s</span> <span class="dim">→ %s</span>`,
+				html.EscapeString(d.AckedID), html.EscapeString(d.MsgTo))
+		}
+		return fmt.Sprintf(`<span class="rej">✗ REJ %s</span>`, html.EscapeString(d.AckedID))
+	}
 	if d.IsTelemetry {
 		var bits strings.Builder
 		for _, on := range d.TelemBits {
@@ -316,6 +562,35 @@ func parsedInfoHTML(pkt aprs.Packet) string {
 			} else {
 				bits.WriteByte('0')
 			}
+		}
+		// If we have a station's telemetry config, render labeled values:
+		//   "Battery 13.4 V · Temp 67.5 °F · …"
+		// Otherwise fall back to bare numeric "v1 · v2 · …" rendering.
+		if tc != nil {
+			vals := tc.Apply(d.TelemAnalog)
+			var labeled strings.Builder
+			for i := 0; i < 5; i++ {
+				if i > 0 {
+					labeled.WriteString(" · ")
+				}
+				name := tc.ParamNames[i]
+				unit := tc.UnitNames[i]
+				if name == "" {
+					fmt.Fprintf(&labeled, "%g", vals[i])
+					continue
+				}
+				labeled.WriteString(html.EscapeString(name))
+				labeled.WriteString(" ")
+				fmt.Fprintf(&labeled, "%g", vals[i])
+				if unit != "" {
+					labeled.WriteString(" ")
+					labeled.WriteString(html.EscapeString(unit))
+				}
+			}
+			return fmt.Sprintf(
+				`<span class="telem">📊 T#%d</span> <span class="telem-vals">%s · <code>%s</code></span>`,
+				d.TelemSeq, labeled.String(), bits.String(),
+			)
 		}
 		return fmt.Sprintf(
 			`<span class="telem">📊 T#%d</span> <span class="telem-vals">%g · %g · %g · %g · %g · <code>%s</code></span>`,
@@ -407,6 +682,9 @@ func (s *Server) handleMap(w http.ResponseWriter, r *http.Request) {
 			data["FilterKm"] = km
 		}
 	}
+	defaultTR, opts := resolveWindow("1h", "1h", snap.RetentionDays)
+	data["WindowOptions"] = opts
+	data["DefaultWindow"] = defaultTR.Value
 	s.render(w, "map.html", data)
 }
 
@@ -446,16 +724,9 @@ func parseISFilterRadius(s string) (lat, lon float64, km int, ok bool) {
 // included — static iGates / weather stations would just clutter the map.
 // Response is a JSON object keyed by callsign: { "CALL-1": [[lat,lon,ts],...] }.
 func (s *Server) apiTrails(w http.ResponseWriter, r *http.Request) {
-	minutes := 60
-	if v := r.URL.Query().Get("minutes"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			if n > 7*24*60 {
-				n = 7 * 24 * 60
-			}
-			minutes = n
-		}
-	}
-	since := time.Now().Add(-time.Duration(minutes) * time.Minute)
+	retention := s.state.Snapshot().RetentionDays
+	tr, _ := resolveWindow(r.URL.Query().Get("window"), "1h", retention)
+	since := time.Now().Add(-tr.Dur)
 	// Direct indexed select on (ts, lat, lon) — no info-field re-parsing.
 	// Intake (server.go LogPacket call) already applied range / null-island
 	// / third-party guards before storing, so this loop only needs to deal
@@ -472,6 +743,13 @@ func (s *Server) apiTrails(w http.ResponseWriter, r *http.Request) {
 	)
 	trails := make(map[string][][3]float64)
 	for _, p := range pkts {
+		// Lat=0 AND lon=0 (Null Island): classic cold-boot GPS — fix not
+		// yet acquired when packet generated. Match aprs.fi convention.
+		// Use AND not OR so we keep legitimate equator (lat=0) and prime-
+		// meridian (lon=0) positions.
+		if p.Lat == 0 && p.Lon == 0 {
+			continue
+		}
 		existing := trails[p.Source]
 		if n := len(existing); n > 0 {
 			last := existing[n-1]
@@ -485,7 +763,14 @@ func (s *Server) apiTrails(w http.ResponseWriter, r *http.Request) {
 			if dLat < minDeltaDeg && dLon < minDeltaDeg {
 				continue
 			}
-			distKm := (dLat + dLon) * degToKm
+			// Equirectangular distance with cos(lat) on the longitude term.
+			// At lat L, one degree of longitude is 111·cos(L) km, not 111.
+			// Manhattan sum would over-estimate by up to √2 on diagonal
+			// travel; Euclidean is the honest answer.
+			cosLat := math.Cos(p.Lat * math.Pi / 180)
+			dLatKm := dLat * degToKm
+			dLonKm := dLon * degToKm * cosLat
+			distKm := math.Sqrt(dLatKm*dLatKm + dLonKm*dLonKm)
 			elapsedHr := (float64(p.Time.Unix()) - last[2]) / 3600.0
 			if elapsedHr > 0 && distKm/elapsedHr > maxKmh {
 				continue
@@ -506,16 +791,9 @@ func (s *Server) apiTrails(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiStations(w http.ResponseWriter, r *http.Request) {
-	minutes := 60
-	if v := r.URL.Query().Get("minutes"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			if n > 7*24*60 {
-				n = 7 * 24 * 60
-			}
-			minutes = n
-		}
-	}
-	cutoff := time.Now().Add(-time.Duration(minutes) * time.Minute)
+	retention := s.state.Snapshot().RetentionDays
+	tr, _ := resolveWindow(r.URL.Query().Get("window"), "1h", retention)
+	cutoff := time.Now().Add(-tr.Dur)
 	list, err := s.store.HeardSince(cutoff, "")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -549,6 +827,15 @@ func (s *Server) apiStations(w http.ResponseWriter, r *http.Request) {
 		HopSummary  string  `json:"hops,omitempty"`
 		QConstruct  string  `json:"q,omitempty"`
 		IGate       string  `json:"igate,omitempty"`
+		// Object/Item — only set when the latest packet was a `;` or `)`
+		// report. ObjectName is the 9-char name (trimmed); ObjectKilled
+		// indicates the object was marked dead.
+		ObjectName    string `json:"object_name,omitempty"`
+		ObjectKilled  bool   `json:"object_killed,omitempty"`
+		// Ambiguity is 0-4 per APRS spec §6 (uncompressed positions).
+		// >0 means the operator deliberately blanked trailing decimals;
+		// the marker should not be trusted to street-level precision.
+		Ambiguity int `json:"ambiguity,omitempty"`
 	}
 	out := make([]stationOut, 0, len(list))
 	for _, st := range list {
@@ -593,6 +880,9 @@ func (s *Server) apiStations(w http.ResponseWriter, r *http.Request) {
 			o.QConstruct = ps.QConstruct
 			o.IGate = ps.IGateCall
 		}
+		o.ObjectName = dec.ObjectName
+		o.ObjectKilled = dec.ObjectKilled
+		o.Ambiguity = dec.Ambiguity
 		out = append(out, o)
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -637,6 +927,37 @@ func (s *Server) handleStationDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	packets, _ := s.store.PacketsBySource(call, 500)
+	// Build the merged telemetry config first (newest-config-of-each-kind)
+	// so we can apply it when rendering T# data packets below.
+	var tcMerged *aprs.TelemConfig
+	for _, p := range packets {
+		d := aprs.Decode(p.Info, p.Dest)
+		if d.TelemConfig == nil {
+			continue
+		}
+		if tcMerged == nil {
+			tcMerged = &aprs.TelemConfig{}
+		}
+		switch d.TelemConfig.Kind {
+		case "parm":
+			if tcMerged.ParamNames[0] == "" {
+				tcMerged.ParamNames = d.TelemConfig.ParamNames
+			}
+		case "unit":
+			if tcMerged.UnitNames[0] == "" {
+				tcMerged.UnitNames = d.TelemConfig.UnitNames
+			}
+		case "eqns":
+			if tcMerged.Coeffs[0][0] == 0 && tcMerged.Coeffs[0][1] == 0 && tcMerged.Coeffs[0][2] == 0 {
+				tcMerged.Coeffs = d.TelemConfig.Coeffs
+			}
+		case "bits":
+			if tcMerged.Title == "" {
+				tcMerged.Sense = d.TelemConfig.Sense
+				tcMerged.Title = d.TelemConfig.Title
+			}
+		}
+	}
 	rendered := make([]template.HTML, 0, len(packets))
 	for _, p := range packets {
 		var origin ax25.Source
@@ -653,7 +974,7 @@ func (s *Server) handleStationDetail(w http.ResponseWriter, r *http.Request) {
 			fr.Path = strings.Split(p.Path, ",")
 		}
 		pkt := aprs.Parse(fr)
-		rendered = append(rendered, template.HTML(s.renderPacketHTML(pkt)))
+		rendered = append(rendered, template.HTML(s.renderPacketHTMLWithConfig(pkt, tcMerged)))
 	}
 	data["Station"] = st
 	data["RenderedPackets"] = rendered
@@ -678,6 +999,22 @@ func (s *Server) handleStationDetail(w http.ResponseWriter, r *http.Request) {
 			if dec.RNG != nil {
 				data["RNG"] = dec.RNG
 			}
+			if dec.ObjectName != "" {
+				data["ObjectName"] = dec.ObjectName
+				data["ObjectKilled"] = dec.ObjectKilled
+			}
+			if dec.Ambiguity > 0 {
+				// Map level to a human-readable uncertainty radius per
+				// APRS spec §6. Operators see "approximate" instead of
+				// a dot that lies about its precision.
+				labels := []string{"", "≈ ±185 m", "≈ ±1.8 km", "≈ ±18 km", "≈ ±111 km"}
+				if dec.Ambiguity < len(labels) {
+					data["AmbiguityLabel"] = labels[dec.Ambiguity]
+				}
+			}
+		}
+		if tcMerged != nil {
+			data["TelemConfig"] = tcMerged
 		}
 		if st.LastPath != "" {
 			data["PathSummary"] = aprs.ParsePath(st.LastPath)
@@ -686,30 +1023,11 @@ func (s *Server) handleStationDetail(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "station_detail.html", data)
 }
 
-// stationsWindowOptions defines the time-range chips on the stations page,
-// mirroring the map page's lookback dropdown.
-var stationsWindowOptions = []struct {
-	Value string
-	Label string
-	Dur   time.Duration
-}{
-	{"1h", "1 hour", 1 * time.Hour},
-	{"24h", "24 hours", 24 * time.Hour},
-	{"7d", "7 days", 7 * 24 * time.Hour},
-	{"30d", "30 days", 30 * 24 * time.Hour},
-}
-
 func (s *Server) handleStations(w http.ResponseWriter, r *http.Request) {
-	window := r.URL.Query().Get("window")
-	dur := 24 * time.Hour
-	matched := "24h"
-	for _, w := range stationsWindowOptions {
-		if w.Value == window {
-			dur = w.Dur
-			matched = w.Value
-			break
-		}
-	}
+	snap := s.state.Snapshot()
+	tr, opts := resolveWindow(r.URL.Query().Get("window"), "24h", snap.RetentionDays)
+	dur := tr.Dur
+	matched := tr.Value
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	if len(query) > 64 {
 		query = query[:64]
@@ -729,7 +1047,7 @@ func (s *Server) handleStations(w http.ResponseWriter, r *http.Request) {
 	data["Stations"] = list
 	data["BlockedSrcs"] = blockedMap
 	data["Window"] = matched
-	data["WindowOptions"] = stationsWindowOptions
+	data["WindowOptions"] = opts
 	data["Query"] = query
 	data["MessageMatches"] = msgMatches
 	s.render(w, "stations.html", data)
@@ -799,7 +1117,7 @@ func (s *Server) handleMessagesThread(w http.ResponseWriter, r *http.Request) {
 	if v, err := validateCallsign(peer); err == nil {
 		peer = v
 	} else {
-		http.Error(w, "bad peer callsign", http.StatusBadRequest)
+		flash(w, false, "bad peer callsign")
 		return
 	}
 	thread, _ := s.store.MessagesWithPeer(myCall, peer, 500)
@@ -815,11 +1133,11 @@ func (s *Server) handleMessagesThread(w http.ResponseWriter, r *http.Request) {
 // calling on a row that's not pending is a no-op.
 func (s *Server) handleMessageCancel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		flash(w, false, "POST required")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		flash(w, false, "bad form")
 		return
 	}
 	if !s.requireCSRF(w, r) {
@@ -828,12 +1146,12 @@ func (s *Server) handleMessageCancel(w http.ResponseWriter, r *http.Request) {
 	idStr := strings.TrimPrefix(r.URL.Path, "/messages/cancel/")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil || id <= 0 {
-		http.Error(w, "bad id", http.StatusBadRequest)
+		flash(w, false, "bad id")
 		return
 	}
 	m, err := s.store.GetMessage(id)
 	if err != nil || m.Direction != "out" {
-		http.Error(w, "not found", http.StatusNotFound)
+		flash(w, false, "not found")
 		return
 	}
 	if m.State == "pending" {
@@ -851,11 +1169,11 @@ func (s *Server) handleMessageCancel(w http.ResponseWriter, r *http.Request) {
 // /messages/retry/<id>.
 func (s *Server) handleMessageRetry(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		flash(w, false, "POST required")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		flash(w, false, "bad form")
 		return
 	}
 	if !s.requireCSRF(w, r) {
@@ -864,16 +1182,16 @@ func (s *Server) handleMessageRetry(w http.ResponseWriter, r *http.Request) {
 	idStr := strings.TrimPrefix(r.URL.Path, "/messages/retry/")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil || id <= 0 {
-		http.Error(w, "bad id", http.StatusBadRequest)
+		flash(w, false, "bad id")
 		return
 	}
 	m, err := s.store.GetMessage(id)
 	if err != nil || m.Direction != "out" {
-		http.Error(w, "not found", http.StatusNotFound)
+		flash(w, false, "not found")
 		return
 	}
 	if m.State != "failed" && m.State != "cancelled" {
-		http.Error(w, "not in a retryable state", http.StatusConflict)
+		flash(w, false, "not in a retryable state")
 		return
 	}
 	// Fresh TX (re-encode and send). Reuse the existing msg-id so the
@@ -909,11 +1227,11 @@ func renderFragment(w http.ResponseWriter, _ *http.Request, tmpl *template.Templ
 
 func (s *Server) handleMessageSend(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		flash(w, false, "POST required")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		flash(w, false, "bad form")
 		return
 	}
 	if !s.requireCSRF(w, r) {
@@ -939,12 +1257,35 @@ func (s *Server) handleMessageSend(w http.ResponseWriter, r *http.Request) {
 		flash(w, false, "body required")
 		return
 	}
+	// APRS101 §14: strip chars reserved by the protocol — `{` (msg-id
+	// delimiter, would confuse receiver's parser), `|` and `~` (reserved
+	// for telemetry / future use). Quietly remove rather than reject so
+	// the user's intent ("hi :{ " becomes "hi :") is preserved.
+	body = strings.Map(func(r rune) rune {
+		switch r {
+		case '{', '|', '~':
+			return -1
+		}
+		return r
+	}, body)
+	// APRS101 §14: message body capped at 67 chars. UI textarea has
+	// maxlength=67, but enforce server-side too — a hand-crafted POST or
+	// a future non-browser client could exceed it, and some IS hubs drop
+	// overlong messages silently.
+	if len(body) > 67 {
+		body = body[:67]
+	}
+	if body == "" {
+		flash(w, false, "body required")
+		return
+	}
 	viaRF := r.FormValue("via_rf") == "on"
 	viaIS := r.FormValue("via_is") == "on"
-	// Unique-ish msg id: nanosecond mod 1000 cycles slowly; mix in a random byte.
-	var rb [1]byte
-	_, _ = rand.Read(rb[:])
-	msgID := fmt.Sprintf("%03d", (int(time.Now().UnixNano()/int64(time.Millisecond))+int(rb[0]))%1000)
+	// Monotonic msg-id counter wrapping 1..99999, persisted across restarts.
+	// Matches APRSdroid / YAAC / UI-View32 convention — no collisions within
+	// a 99,999-msg window, naturally orders in logs, easy to recall when
+	// referring to a recent send.
+	msgID := fmt.Sprintf("%d", s.state.NextOutboundMsgID())
 	if !viaRF && !viaIS {
 		viaIS = true
 	}
@@ -1038,11 +1379,11 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 // handleSettingsSave commits the whole settings form atomically.
 func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		flash(w, false, "POST required")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		flash(w, false, "bad form")
 		return
 	}
 	if !s.requireCSRF(w, r) {
@@ -1051,13 +1392,33 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	// Per-field validation up front. Accumulate all errors so the user can
 	// fix them in one pass instead of whack-a-mole.
 	var verrs []string
-	if cs := strings.TrimSpace(r.FormValue("callsign")); cs != "" {
-		if _, err := validateCallsign(cs); err != nil {
+	// Compose CALL[-SSID] from split inputs. Fall back to the legacy combined
+	// "callsign" field for hand-crafted/api callers, but the UI now sends both
+	// callsign_base + callsign_ssid.
+	combinedCS := strings.TrimSpace(r.FormValue("callsign"))
+	if base := strings.TrimSpace(r.FormValue("callsign_base")); base != "" {
+		combinedCS = strings.ToUpper(base)
+		if ssid := strings.TrimSpace(r.FormValue("callsign_ssid")); ssid != "" && ssid != "0" {
+			n, err := strconv.Atoi(ssid)
+			if err != nil || n < 0 || n > 15 {
+				verrs = append(verrs, "ssid must be 0-15")
+			} else {
+				combinedCS = fmt.Sprintf("%s-%d", combinedCS, n)
+			}
+		}
+	}
+	if combinedCS != "" {
+		if _, err := validateCallsign(combinedCS); err != nil {
 			verrs = append(verrs, "callsign: "+err.Error())
 		}
 	}
-	if err := validatePasscode(r.FormValue("passcode")); err != nil {
+	passcodeIn := strings.TrimSpace(r.FormValue("passcode"))
+	if err := validatePasscode(passcodeIn); err != nil {
 		verrs = append(verrs, err.Error())
+	} else if passcodeIn != "" && passcodeIn != "-1" && combinedCS != "" {
+		if !aprsISPasscodeMatches(combinedCS, passcodeIn) {
+			verrs = append(verrs, fmt.Sprintf("passcode doesn't match callsign %s", combinedCS))
+		}
 	}
 	// Parse + validate the variable-length beacon list. Each beacon row in the
 	// form uses indexed names: beacon_<i>_name, beacon_<i>_info, etc.
@@ -1068,9 +1429,9 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := s.state.Update(func(st *state.State) error {
-		cs, _ := validateCallsign(r.FormValue("callsign"))
+		cs, _ := validateCallsign(combinedCS)
 		st.Callsign = cs
-		st.Passcode = sanitizeAPRSField(r.FormValue("passcode"))
+		st.Passcode = sanitizeAPRSField(passcodeIn)
 		st.ISServer = sanitizeAPRSField(r.FormValue("is_server"))
 		st.ISFilter = sanitizeAPRSField(r.FormValue("is_filter"))
 		st.Beacons = beacons
@@ -1089,12 +1450,71 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 			st.OfflineMode = r.FormValue("offline_mode") == "1"
 			st.MessagingOnlyMode = r.FormValue("messaging_only_mode") == "1"
 			st.PreemptiveDigipeat = r.FormValue("preemptive_digipeat") == "1"
+			if v := r.FormValue("igate_recent_rf_minutes"); v != "" {
+				if m, err := strconv.Atoi(v); err == nil && m >= 5 && m <= 1440 {
+					st.IGateRecentRFMinutes = m
+				}
+			}
+			// IS→RF outer-frame path. Empty string is valid (direct only).
+			// Re-use the beacon-path validator (rejects WIDE>2 hops and
+			// unrecognized tokens). Silently ignore malformed input rather
+			// than aborting the entire settings save.
+			if v := r.FormValue("igate_tx_path"); v != "" {
+				if hops, perr := validateBeaconPath(v); perr == nil && len(hops) <= 2 {
+					st.IGateTXPath = strings.Join(hops, ",")
+				}
+			} else {
+				st.IGateTXPath = ""
+			}
+		}
+		// KISS advanced TNC params. 0 = "don't send the command". Range clamps
+		// stop a malicious POST from causing a TNC to lock keyed for minutes.
+		clampMs := func(v int) int {
+			if v < 0 {
+				return 0
+			}
+			if v > 2550 {
+				return 2550
+			}
+			return v
+		}
+		if v, err := strconv.Atoi(r.FormValue("tnc_tx_delay_ms")); err == nil {
+			st.TNCTXDelayMs = clampMs(v)
+		}
+		if v, err := strconv.Atoi(r.FormValue("tnc_persist")); err == nil {
+			if v < 0 {
+				v = 0
+			}
+			if v > 255 {
+				v = 255
+			}
+			st.TNCPersist = v
+		}
+		if v, err := strconv.Atoi(r.FormValue("tnc_slot_time_ms")); err == nil {
+			st.TNCSlotTimeMs = clampMs(v)
+		}
+		if v, err := strconv.Atoi(r.FormValue("tnc_tx_tail_ms")); err == nil {
+			st.TNCTXTailMs = clampMs(v)
 		}
 		if t := r.FormValue("theme"); t == "auto" || t == "light" || t == "dark" {
 			st.Theme = t
 		}
 		if d, err := strconv.Atoi(r.FormValue("retention_days")); err == nil && d >= 0 && d <= 3650 {
 			st.RetentionDays = d
+		}
+		if tf := r.FormValue("time_format"); tf == "12h" || tf == "24h" {
+			st.TimeFormat = tf
+		}
+		// Validate the IANA name actually loads — silently accept blank
+		// (= use server's local) but reject typos so the UI doesn't end
+		// up showing UTC unexpectedly when LoadLocation fails at render.
+		if tz := strings.TrimSpace(r.FormValue("timezone")); tz != "" {
+			if _, err := time.LoadLocation(tz); err != nil {
+				return fmt.Errorf("timezone: %q is not a valid IANA name", tz)
+			}
+			st.Timezone = tz
+		} else {
+			st.Timezone = ""
 		}
 		return nil
 	})
@@ -1129,11 +1549,11 @@ func flash(w http.ResponseWriter, ok bool, msg string) {
 // handleChangePassword: HTMX endpoint posted from the settings page.
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		flash(w, false, "POST required")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		flash(w, false, "bad form")
 		return
 	}
 	if !s.requireCSRF(w, r) {

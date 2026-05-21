@@ -63,6 +63,15 @@ func init() {
 	}
 	tocallExact = make(map[string]DeviceID, len(raw.Tocalls))
 	for _, e := range raw.Tocalls {
+		// The registry includes some entries with vendor/model literally set
+		// to "Unknown" — treat those as absent so callers can suppress the
+		// chip rather than rendering "Unknown Unknown".
+		if strings.EqualFold(e.Vendor, "unknown") {
+			e.Vendor = ""
+		}
+		if strings.EqualFold(e.Model, "unknown") {
+			e.Model = ""
+		}
 		if strings.ContainsRune(e.Tocall, '?') {
 			tocallWildcard = append(tocallWildcard, e)
 		} else {

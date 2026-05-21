@@ -18,10 +18,11 @@ import (
 //   - When the timeout expires the source resets fully — the next packet
 //     starts a fresh window with count=1.
 type sourceRateLimiter struct {
-	mu        sync.Mutex
-	buckets   map[string]*sourceBucket
-	threshold int           // packets/minute that triggers timeout
-	timeout   time.Duration // how long a source stays blocked once tripped
+	mu          sync.Mutex
+	buckets     map[string]*sourceBucket
+	threshold   int           // packets/minute that triggers timeout
+	timeout     time.Duration // how long a source stays blocked once tripped
+	lastCleanup time.Time     // time-bucketed periodic GC, drives maybeCleanup
 }
 
 type sourceBucket struct {
@@ -50,10 +51,17 @@ func (l *sourceRateLimiter) Allow(source string) (ok bool, justBlocked bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	// Periodic time-bucketed cleanup: walk and evict idle buckets once per
+	// minute. Without this, a workload that stops adding new sources would
+	// keep the map at its peak size forever (previously cleanup only fired
+	// on first-seen inserts).
+	if now.Sub(l.lastCleanup) > time.Minute {
+		l.maybeCleanup(now)
+		l.lastCleanup = now
+	}
 	b, ok2 := l.buckets[source]
 	if !ok2 {
 		l.buckets[source] = &sourceBucket{count: 1, window: now}
-		l.maybeCleanup(now)
 		return true, false
 	}
 	// Currently blocked?
@@ -82,14 +90,12 @@ func (l *sourceRateLimiter) Allow(source string) (ok bool, justBlocked bool) {
 	return true, false
 }
 
-// maybeCleanup evicts stale buckets when the map grows too large.
-// Caller must hold l.mu.
+// maybeCleanup evicts stale buckets — called periodically (once per minute)
+// by Allow(), plus on every new-source insert. Drops idle buckets (no recent
+// window, not currently blocked) so the map doesn't grow unboundedly when
+// many unique sources have been seen. Caller must hold l.mu.
 func (l *sourceRateLimiter) maybeCleanup(now time.Time) {
-	if len(l.buckets) <= 1024 {
-		return
-	}
 	for k, v := range l.buckets {
-		// Drop idle buckets (no recent window) that aren't currently blocked.
 		if v.blockedUntil.IsZero() && now.Sub(v.window) > 5*time.Minute {
 			delete(l.buckets, k)
 		}

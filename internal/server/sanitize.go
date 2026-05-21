@@ -28,14 +28,46 @@ func sanitizeAPRSField(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// MaxBeaconCommentLen is the position-comment cap from APRS101 §8 ("max 43
+// chars after the symbol code"). Status text technically has a higher limit
+// but beacons in aprgo are always position reports.
+const MaxBeaconCommentLen = 43
+
+// sanitizeBeaconComment cleans operator-supplied beacon comment text per
+// APRS101 §5/§8: keep only printable ASCII (0x20-0x7E) excluding `|` and `~`
+// (reserved for telemetry / future use), then cap at 43 bytes.
+func sanitizeBeaconComment(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x20 || c == 0x7F || c == '|' || c == '~' {
+			continue
+		}
+		b.WriteByte(c)
+	}
+	out := strings.TrimSpace(b.String())
+	if len(out) > MaxBeaconCommentLen {
+		out = out[:MaxBeaconCommentLen]
+	}
+	return out
+}
+
 // callsignRE matches AX.25 + APRS callsign-SSID format: 1-6 alphanumeric
 // followed by optional -SSID where SSID is 0-15 (the AX.25 spec limit:
 // the SSID byte has 4 bits for the number).
 var callsignRE = regexp.MustCompile(`^[A-Z0-9]{1,6}(-([0-9]|1[0-5]))?$`)
 
-// wideRE matches the legal WIDEn-N forms used as digipeater path tokens.
-// n must be 1 or 2 and N must be 0..n per the APRS New-N paradigm.
-var wideRE = regexp.MustCompile(`^WIDE([12])-([012])$`)
+// callsignBaseRE matches just the base callsign portion (no -SSID suffix).
+// Used by the wizard which splits call + SSID into separate inputs.
+var callsignBaseRE = regexp.MustCompile(`^[A-Z0-9]{1,6}$`)
+
+// wideRE matches the legal WIDEn-N forms a station may originate per the
+// APRS New-N paradigm: WIDE1-1 (fill-in, single-hop only), WIDE2-1, and
+// WIDE2-2. WIDE1-0 (already-used) and WIDE1-2 (undefined — fill-in is
+// single-hop by definition) are explicitly rejected to catch typos at
+// save time rather than surface as mystery on-air behavior.
+var wideRE = regexp.MustCompile(`^(WIDE1-1|WIDE2-[12])$`)
 
 // validateBeaconPath checks every comma-separated hop is either a valid
 // WIDE-token or a real callsign. Returns sanitized list or an error.
@@ -65,21 +97,6 @@ func validateBeaconPath(s string) ([]string, error) {
 	return out, nil
 }
 
-// validateBeaconText ensures the info field starts with a valid APRS data-type
-// indicator. Accepted: `!` `=` `/` `@` (position with/without timestamp and
-// with/without messaging), or empty (no beacon).
-func validateBeaconText(s string) error {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
-	}
-	switch s[0] {
-	case '!', '=', '/', '@':
-		return nil
-	}
-	return fmt.Errorf("beacon info field must start with !, =, /, or @ (APRS position data-type indicator)")
-}
-
 // parseBeaconsForm reads the indexed beacon form fields and returns the
 // resulting []state.Beacon plus any validation errors.
 // Form layout: beacon_count = N, then per row beacon_<i>_{name,symbol,
@@ -105,7 +122,7 @@ func parseBeaconsForm(r interface {
 		if symbol == "custom" {
 			symbol = strings.TrimSpace(r.FormValue(fmt.Sprintf("beacon_%d_symbol_custom", i)))
 		}
-		comment := sanitizeAPRSField(r.FormValue(fmt.Sprintf("beacon_%d_comment", i)))
+		comment := sanitizeBeaconComment(r.FormValue(fmt.Sprintf("beacon_%d_comment", i)))
 		messages := r.FormValue(fmt.Sprintf("beacon_%d_messages", i)) == "1"
 		// Tocall is the software identifier — always force the project default;
 		// not an operator choice. Advanced users who really want to ship a

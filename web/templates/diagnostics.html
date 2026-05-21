@@ -19,7 +19,7 @@
     <div class="eyebrow">Currently rate-limited</div>
     <ul class="diag-blocked-list">
       {{range .Blocked}}
-      <li><a href="/stations/{{.Source}}"><code>{{.Source}}</code></a> — block expires <time class="rel-time" data-ts="{{unix .BlockedUntil}}" title="{{.BlockedUntil.Format "2006-01-02 15:04:05"}}"></time></li>
+      <li><a href="/stations/{{.Source}}"><code>{{.Source}}</code></a> — block expires <time class="rel-time" data-ts="{{unix .BlockedUntil}}" title="{{fmtDateTime .BlockedUntil $.TZ $.TF}}"></time></li>
       {{end}}
     </ul>
   </div>
@@ -38,7 +38,7 @@
   <tbody>
     {{range .Drops}}
     <tr>
-      <td class="col-time"><time class="rel-time" data-ts="{{unix .Time}}" title="{{.Time.Format "2006-01-02 15:04:05"}}"></time></td>
+      <td class="col-time"><time class="rel-time" data-ts="{{unix .Time}}" title="{{fmtDateTime .Time $.TZ $.TF}}"></time></td>
       <td><span class="dir-pill {{if eq .Origin "RF"}}in{{else if eq .Origin "TX"}}out{{else}}in{{end}}">{{.Origin}}</span></td>
       <td class="col-call">{{if .Source}}{{.Source}}{{else}}<span class="dim">—</span>{{end}}</td>
       <td class="col-call">{{if .Dest}}{{.Dest}}{{else}}<span class="dim">—</span>{{end}}</td>

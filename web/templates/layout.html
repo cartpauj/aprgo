@@ -18,6 +18,15 @@
 {{if .DefaultPassword}}<div class="default-pw-banner">
   ⚠ The admin password is still <code>admin</code> — <a href="/settings">change it</a> before anyone else does.
 </div>{{end}}
+{{if .ISLastError}}<div class="conn-err-banner">
+  ⚠ APRS-IS disconnected: <code>{{.ISLastError}}</code>
+</div>{{end}}
+{{if .RFLastError}}<div class="conn-err-banner">
+  ⚠ RF/TNC error: <code>{{.RFLastError}}</code>
+</div>{{end}}
+{{if .TXDisabled}}<div class="tx-off-banner">
+  TX is off — receive-only. <a href="/settings">Enable in settings</a> if this isn't what you want.
+</div>{{end}}
 <header class="topbar">
   <div class="topbar-inner">
     <a href="/" class="brand" aria-label="aprgo home">

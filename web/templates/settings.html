@@ -19,12 +19,20 @@
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
 
     {{template "settingsSectionOpen" (dict "Num" "01" "Title" "Identity" "Sub" "Your callsign-SSID and APRS-IS passcode." "BodyClass" "grid-cols-fit")}}
-      <label>Callsign-SSID
-        <input type="text" name="callsign" value="{{.St.Callsign}}" placeholder="N0CALL-10" required>
+      <label>Callsign
+        <input type="text" name="callsign_base" value="{{callsignBase .St.Callsign}}" placeholder="N0CALL" maxlength="6" required pattern="[A-Za-z0-9]{1,6}" style="text-transform:uppercase">
+      </label>
+      <label>SSID
+        <select name="callsign_ssid">
+          {{$cur := callsignSSID .St.Callsign}}
+          {{range $n := (intSeq 0 15)}}
+            <option value="{{$n}}" {{if eq (printf "%d" $n) $cur}}selected{{end}}>{{$n}}{{if eq $n 10}} — iGate{{else if eq $n 9}} — mobile{{else if eq $n 7}} — HT{{else if eq $n 1}} — digi{{end}}</option>
+          {{end}}
+        </select>
       </label>
       <label><span class="label-head">APRS-IS passcode
-        <span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Numeric, callsign-specific. Use <code>-1</code> for RX-only. <a href="https://apps.magicbug.co.uk/passcode/" target="_blank" rel="noopener">Generate one</a>.</span></span></span>
-        <input type="text" name="passcode" value="{{.St.Passcode}}" placeholder="numeric or -1 for RX-only">
+        <span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Numeric, callsign-specific. Use <code>-1</code> for RX-only. <a href="https://apps.magicbug.co.uk/passcode/" target="_blank" rel="noopener">Generate one</a>. aprgo verifies the passcode against your callsign locally before saving.</span></span></span>
+        <input type="text" name="passcode" value="{{.St.Passcode}}" placeholder="numeric or -1 for RX-only" inputmode="numeric" pattern="-?\d+">
       </label>
     {{template "settingsSectionClose" .}}
 
@@ -38,17 +46,25 @@
       </div>
     {{template "settingsSectionClose" .}}
 
-    {{template "settingsSectionOpen" (dict "Num" "03" "Title" "Gating + Digipeating" "Sub" "What aprgo does between RF and APRS-IS." "BodyClass" "stack-2 flags-grid")}}
+    {{template "settingsSectionOpen" (dict "Num" "03" "Title" "Gating + Digipeating" "Sub" "What aprgo does between RF and APRS-IS." "BodyClass" "stack-3")}}
     {{if eq (printf "%s" .St.Mode) "advanced"}}
-      <label class="cb"><input type="checkbox" name="tx_enable" value="1" {{if .St.TXEnable}}checked{{end}}> Master TX enable<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Let aprgo transmit over RF. Off = receive-only regardless of other flags.</span></span></label>
-      <label class="cb"><input type="checkbox" name="gate_rf_to_is" value="1" {{if .St.GateRFtoIS}}checked{{end}}> Gate RF → APRS-IS<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Acts as an iGate: forward RF-heard packets to the internet.</span></span></label>
-      <label class="cb"><input type="checkbox" name="gate_is_to_rf" value="1" {{if .St.GateIStoRF}}checked{{end}}> Gate APRS-IS → RF<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Relay APRS-IS messages over RF for stations you've recently heard on air.</span></span></label>
-      <label class="cb"><input type="checkbox" name="digipeat_wide1" value="1" {{if .St.DigipeatWIDE1}}checked{{end}}> Fill-in digipeater<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Handle <code>WIDE1-1</code>. Safe for home iGates.</span></span></label>
-      <label class="cb"><input type="checkbox" name="digipeat_wide2" value="1" {{if .St.DigipeatWIDE2}}checked{{end}}> Full digipeater<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Handle <code>WIDE2-N</code> with decrement. Only enable from a high-elevation site.</span></span></label>
-      <label class="cb"><input type="checkbox" name="viscous_delay" value="1" {{if .St.ViscousDelay}}checked{{end}}> Viscous delay<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Hold <code>WIDE1-1</code> retransmits 3–5 s and cancel if a higher digi handled it first. Standard fill-in politeness — leave on unless you have a reason.</span></span></label>
-      <label class="cb"><input type="checkbox" name="preemptive_digipeat" value="1" {{if .St.PreemptiveDigipeat}}checked{{end}}> Preemptive digipeat<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Honor packets that list your callsign anywhere in the path, not just as the next hop. Prior unused hops are marked used (MARK mode) so the original path is preserved on air. Never triggers on generic <code>WIDEn-N</code>.</span></span></label>
-      <label class="cb"><input type="checkbox" name="offline_mode" value="1" {{if .St.OfflineMode}}checked{{end}}> Offline mode<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Skip APRS-IS entirely. Off-grid digi setups.</span></span></label>
-      <label class="cb"><input type="checkbox" name="messaging_only_mode" value="1" {{if .St.MessagingOnlyMode}}checked{{end}}> Messaging-only<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Gate only messages and acks RF↔IS. Skip beacons, weather, telemetry.</span></span></label>
+      <div class="stack-2 flags-grid">
+        <label class="cb"><input type="checkbox" name="tx_enable" value="1" {{if .St.TXEnable}}checked{{end}}> Master TX enable<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Let aprgo transmit over RF. Off = receive-only regardless of other flags.</span></span></label>
+        <label class="cb"><input type="checkbox" name="gate_rf_to_is" value="1" {{if .St.GateRFtoIS}}checked{{end}}> Gate RF → APRS-IS<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Acts as an iGate: forward RF-heard packets to the internet.</span></span></label>
+        <label class="cb"><input type="checkbox" name="gate_is_to_rf" value="1" {{if .St.GateIStoRF}}checked{{end}}> Gate APRS-IS → RF<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Relay APRS-IS messages over RF for stations you've recently heard on air.</span></span></label>
+        <label class="cb"><input type="checkbox" name="digipeat_wide1" value="1" {{if .St.DigipeatWIDE1}}checked{{end}}> Fill-in digipeater<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Handle <code>WIDE1-1</code>. Safe for home iGates.</span></span></label>
+        <label class="cb"><input type="checkbox" name="digipeat_wide2" value="1" {{if .St.DigipeatWIDE2}}checked{{end}}> Full digipeater<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Handle <code>WIDE2-N</code> with decrement. Only enable from a high-elevation site.</span></span></label>
+        <label class="cb"><input type="checkbox" name="viscous_delay" value="1" {{if .St.ViscousDelay}}checked{{end}}> Viscous delay<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Hold <code>WIDE1-1</code> retransmits 3–5 s and cancel if a higher digi handled it first. Standard fill-in politeness — leave on unless you have a reason.</span></span></label>
+        <label class="cb"><input type="checkbox" name="preemptive_digipeat" value="1" {{if .St.PreemptiveDigipeat}}checked{{end}}> Preemptive digipeat<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Honor packets that list your callsign anywhere in the path, not just as the next hop. Prior unused hops are marked used (MARK mode) so the original path is preserved on air. Never triggers on generic <code>WIDEn-N</code>.</span></span></label>
+        <label class="cb"><input type="checkbox" name="offline_mode" value="1" {{if .St.OfflineMode}}checked{{end}}> Offline mode<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Skip APRS-IS entirely. Off-grid digi setups.</span></span></label>
+        <label class="cb"><input type="checkbox" name="messaging_only_mode" value="1" {{if .St.MessagingOnlyMode}}checked{{end}}> Messaging-only<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Gate only messages and acks RF↔IS. Skip beacons, weather, telemetry.</span></span></label>
+      </div>
+      <label class="num-row"><span class="label-head">Recent-RF window (min)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">How recently a remote station must have been heard on RF before aprgo gates an APRS-IS message to them. Other iGate software defaults 30–60 min. aprgo defaults 30 min (APRS-IS convention) — raise for fixed digipeaters that beacon infrequently, lower for dense-traffic urban areas. Range 5–1440.</span></span></span>
+        <input type="number" name="igate_recent_rf_minutes" value="{{if .St.IGateRecentRFMinutes}}{{.St.IGateRecentRFMinutes}}{{else}}30{{end}}" min="5" max="1440">
+      </label>
+      <label class="num-row"><span class="label-head">IS→RF outer path<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Via path attached to the outer AX.25 frame when relaying an APRS-IS message to RF. Reference iGates (APRX, Direwolf IGTXVIA, YAAC, PinPoint) default to <code>WIDE1-1</code> (one fill-in hop). Leave empty for direct only — appropriate for hilltop sites with wide coverage. Max 2 hops.</span></span></span>
+        <input type="text" name="igate_tx_path" value="{{.St.IGateTXPath}}" placeholder="WIDE1-1" maxlength="32">
+      </label>
     {{else}}
       <div class="mode-managed-note">
         <div class="eyebrow">Managed by mode</div>
@@ -63,6 +79,8 @@
           <span class="flag-chip {{if .St.PreemptiveDigipeat}}on{{end}}">Preemptive</span>
           <span class="flag-chip {{if .St.OfflineMode}}on{{end}}">Offline</span>
           <span class="flag-chip {{if .St.MessagingOnlyMode}}on{{end}}">Messaging-only</span>
+          <span class="flag-chip on">IS→RF path: {{if .St.IGateTXPath}}{{.St.IGateTXPath}}{{else}}direct{{end}}</span>
+          <span class="flag-chip on">Recent-RF: {{if .St.IGateRecentRFMinutes}}{{.St.IGateRecentRFMinutes}}{{else}}30{{end}}m</span>
         </div>
       </div>
     {{end}}
@@ -77,6 +95,26 @@
         <span class="dim">·</span>
         {{if .RFConnected}}<span class="status-ok">● live</span>{{else}}<span class="dim">○ not connected</span>{{end}}
       </div>
+      {{if eq (printf "%s" .St.Mode) "advanced"}}
+      <details class="advanced-tnc">
+        <summary>Advanced KISS parameters</summary>
+        <p class="dim small">Sent on every TNC connect. Modern KISS TNCs (Direwolf, Mobilinkd, NinoTNC, Kenwood TM-D710/TH-D74) honor these; legacy TNC-2 hardware silently ignores them. Leave any field at <code>0</code> to keep the TNC's own default — most modern TNCs ship with sane values (Mobilinkd TNC3 defaults: 300ms TX delay, 20ms TX tail).</p>
+        <div class="grid-cols-fit-wide">
+          <label>TX Delay (ms)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Delay between keying PTT and starting data. Most radios need 200-500ms or the first bytes get lost. Leave at 0 unless you see truncated TX in receiver logs.</span></span>
+            <input type="number" name="tnc_tx_delay_ms" min="0" max="2550" step="10" value="{{.St.TNCTXDelayMs}}">
+          </label>
+          <label>Persist (0-255)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">CSMA p-persistence. Higher = more aggressive when channel sounds busy. KISS spec recommends 63 (≈25%).</span></span>
+            <input type="number" name="tnc_persist" min="0" max="255" value="{{.St.TNCPersist}}">
+          </label>
+          <label>Slot Time (ms)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Interval between persist samples while waiting for a clear channel.</span></span>
+            <input type="number" name="tnc_slot_time_ms" min="0" max="2550" step="10" value="{{.St.TNCSlotTimeMs}}">
+          </label>
+          <label>TX Tail (ms)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">PTT hold after data. Deprecated by the KISS spec — your TNC ships with the right value (Mobilinkd TNC3 = 20ms). Leave at 0 unless your TNC vendor's docs say otherwise.</span></span>
+            <input type="number" name="tnc_tx_tail_ms" min="0" max="2550" step="10" value="{{.St.TNCTXTailMs}}">
+          </label>
+        </div>
+      </details>
+      {{end}}
     {{template "settingsSectionClose" .}}
 
     {{template "settingsSectionOpen" (dict "Num" "05" "Title" "APRS-IS" "Sub" "The internet leg. The filter scopes what you receive." "BodyClass" "grid-cols-fit-wide")}}
@@ -174,6 +212,65 @@
       </label>
       <label>Data retention (days, 0 = forever)
         <input type="number" name="retention_days" value="{{.St.RetentionDays}}" min="0" max="3650">
+      </label>
+      <label>Time format
+        <select name="time_format">
+          <option value="24h" {{if or (eq .St.TimeFormat "24h") (eq .St.TimeFormat "")}}selected{{end}}>24-hour (15:04:05)</option>
+          <option value="12h" {{if eq .St.TimeFormat "12h"}}selected{{end}}>12-hour (3:04:05 PM)</option>
+        </select>
+      </label>
+      <label>Timezone
+        <select name="timezone">
+          <option value="" {{if eq .St.Timezone ""}}selected{{end}}>Server's local zone ({{.ServerTZ}})</option>
+          <optgroup label="UTC">
+            <option value="UTC" {{if eq .St.Timezone "UTC"}}selected{{end}}>UTC</option>
+          </optgroup>
+          <optgroup label="Americas">
+            <option value="America/New_York"    {{if eq .St.Timezone "America/New_York"}}selected{{end}}>America/New_York (Eastern)</option>
+            <option value="America/Chicago"     {{if eq .St.Timezone "America/Chicago"}}selected{{end}}>America/Chicago (Central)</option>
+            <option value="America/Denver"      {{if eq .St.Timezone "America/Denver"}}selected{{end}}>America/Denver (Mountain)</option>
+            <option value="America/Phoenix"     {{if eq .St.Timezone "America/Phoenix"}}selected{{end}}>America/Phoenix (Arizona)</option>
+            <option value="America/Los_Angeles" {{if eq .St.Timezone "America/Los_Angeles"}}selected{{end}}>America/Los_Angeles (Pacific)</option>
+            <option value="America/Anchorage"   {{if eq .St.Timezone "America/Anchorage"}}selected{{end}}>America/Anchorage (Alaska)</option>
+            <option value="America/Honolulu"    {{if eq .St.Timezone "America/Honolulu"}}selected{{end}}>America/Honolulu (Hawaii)</option>
+            <option value="America/Toronto"     {{if eq .St.Timezone "America/Toronto"}}selected{{end}}>America/Toronto</option>
+            <option value="America/Mexico_City" {{if eq .St.Timezone "America/Mexico_City"}}selected{{end}}>America/Mexico_City</option>
+            <option value="America/Sao_Paulo"   {{if eq .St.Timezone "America/Sao_Paulo"}}selected{{end}}>America/Sao_Paulo</option>
+          </optgroup>
+          <optgroup label="Europe">
+            <option value="Europe/London"    {{if eq .St.Timezone "Europe/London"}}selected{{end}}>Europe/London</option>
+            <option value="Europe/Paris"     {{if eq .St.Timezone "Europe/Paris"}}selected{{end}}>Europe/Paris</option>
+            <option value="Europe/Berlin"    {{if eq .St.Timezone "Europe/Berlin"}}selected{{end}}>Europe/Berlin</option>
+            <option value="Europe/Madrid"    {{if eq .St.Timezone "Europe/Madrid"}}selected{{end}}>Europe/Madrid</option>
+            <option value="Europe/Rome"      {{if eq .St.Timezone "Europe/Rome"}}selected{{end}}>Europe/Rome</option>
+            <option value="Europe/Amsterdam" {{if eq .St.Timezone "Europe/Amsterdam"}}selected{{end}}>Europe/Amsterdam</option>
+            <option value="Europe/Stockholm" {{if eq .St.Timezone "Europe/Stockholm"}}selected{{end}}>Europe/Stockholm</option>
+            <option value="Europe/Helsinki"  {{if eq .St.Timezone "Europe/Helsinki"}}selected{{end}}>Europe/Helsinki</option>
+            <option value="Europe/Athens"    {{if eq .St.Timezone "Europe/Athens"}}selected{{end}}>Europe/Athens</option>
+            <option value="Europe/Moscow"    {{if eq .St.Timezone "Europe/Moscow"}}selected{{end}}>Europe/Moscow</option>
+          </optgroup>
+          <optgroup label="Africa &amp; Middle East">
+            <option value="Africa/Cairo"          {{if eq .St.Timezone "Africa/Cairo"}}selected{{end}}>Africa/Cairo</option>
+            <option value="Africa/Johannesburg"   {{if eq .St.Timezone "Africa/Johannesburg"}}selected{{end}}>Africa/Johannesburg</option>
+            <option value="Asia/Dubai"            {{if eq .St.Timezone "Asia/Dubai"}}selected{{end}}>Asia/Dubai</option>
+          </optgroup>
+          <optgroup label="Asia">
+            <option value="Asia/Kolkata"    {{if eq .St.Timezone "Asia/Kolkata"}}selected{{end}}>Asia/Kolkata</option>
+            <option value="Asia/Bangkok"    {{if eq .St.Timezone "Asia/Bangkok"}}selected{{end}}>Asia/Bangkok</option>
+            <option value="Asia/Singapore"  {{if eq .St.Timezone "Asia/Singapore"}}selected{{end}}>Asia/Singapore</option>
+            <option value="Asia/Hong_Kong"  {{if eq .St.Timezone "Asia/Hong_Kong"}}selected{{end}}>Asia/Hong_Kong</option>
+            <option value="Asia/Tokyo"      {{if eq .St.Timezone "Asia/Tokyo"}}selected{{end}}>Asia/Tokyo</option>
+            <option value="Asia/Seoul"      {{if eq .St.Timezone "Asia/Seoul"}}selected{{end}}>Asia/Seoul</option>
+          </optgroup>
+          <optgroup label="Oceania">
+            <option value="Australia/Perth"   {{if eq .St.Timezone "Australia/Perth"}}selected{{end}}>Australia/Perth</option>
+            <option value="Australia/Sydney"  {{if eq .St.Timezone "Australia/Sydney"}}selected{{end}}>Australia/Sydney</option>
+            <option value="Pacific/Auckland"  {{if eq .St.Timezone "Pacific/Auckland"}}selected{{end}}>Pacific/Auckland</option>
+          </optgroup>
+          {{if .CustomTZ}}<optgroup label="Custom">
+            <option value="{{.St.Timezone}}" selected>{{.St.Timezone}}</option>
+          </optgroup>{{end}}
+        </select>
       </label>
     {{template "settingsSectionClose" .}}
 

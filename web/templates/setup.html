@@ -36,13 +36,24 @@
 {{define "stepIdentity"}}
 <form class="wizard-form narrow" method="POST" action="/setup/save/identity">
   <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-  <label>Callsign-SSID
-    <input type="text" name="callsign" value="{{.St.Callsign}}" placeholder="N0CALL-10" required autofocus>
-    <div class="hint">Your FCC-issued callsign + SSID (10 is conventional for iGates).</div>
-  </label>
+  <div class="grid-cols-2-wide">
+    <label>Callsign
+      <input type="text" name="callsign_base" value="{{callsignBase .St.Callsign}}" placeholder="N0CALL" maxlength="6" required autofocus pattern="[A-Za-z0-9]{1,6}" style="text-transform:uppercase">
+      <div class="hint">Your FCC-issued amateur callsign. 1–6 letters and digits.</div>
+    </label>
+    <label>SSID
+      <select name="callsign_ssid">
+        {{$cur := callsignSSID .St.Callsign}}
+        {{range $n := (intSeq 0 15)}}
+          <option value="{{$n}}" {{if eq (printf "%d" $n) $cur}}selected{{end}}>{{$n}}{{if eq $n 10}} — iGate{{else if eq $n 9}} — mobile{{else if eq $n 7}} — HT{{else if eq $n 1}} — digi{{end}}</option>
+        {{end}}
+      </select>
+      <div class="hint">A number 0–15 identifying this station. 10 is conventional for iGates.</div>
+    </label>
+  </div>
   <label>APRS-IS passcode
-    <input type="text" name="passcode" value="{{.St.Passcode}}" placeholder="numeric — or -1 for RX-only">
-    <div class="hint">Get yours at <a href="https://apps.magicbug.co.uk/passcode/" target="_blank" rel="noopener">apps.magicbug.co.uk/passcode</a>. Use -1 to listen without ever transmitting to IS.</div>
+    <input type="text" name="passcode" value="{{.St.Passcode}}" placeholder="numeric — or -1 for RX-only" inputmode="numeric" pattern="-?\d+">
+    <div class="hint">Get yours at <a href="https://apps.magicbug.co.uk/passcode/" target="_blank" rel="noopener">apps.magicbug.co.uk/passcode</a>. Use <code>-1</code> to listen without ever transmitting to IS. aprgo verifies the passcode against your callsign locally before saving.</div>
   </label>
   <div class="wizard-nav justify-end">
     <button type="submit" class="primary">Next →</button>
@@ -198,9 +209,34 @@
     <label class="cb"><input type="checkbox" name="digipeat_wide1" value="1" {{if .St.DigipeatWIDE1}}checked{{end}}> Fill-in digipeater<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Handle <code>WIDE1-1</code>. Safe for home iGates.</span></span></label>
     <label class="cb"><input type="checkbox" name="digipeat_wide2" value="1" {{if .St.DigipeatWIDE2}}checked{{end}}> Full digipeater<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Handle <code>WIDE2-N</code> with decrement. Only enable from a high-elevation site.</span></span></label>
     <label class="cb"><input type="checkbox" name="viscous_delay" value="1" {{if .St.ViscousDelay}}checked{{end}}> Viscous delay<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Hold <code>WIDE1-1</code> retransmits 3–5 s and cancel if a higher digi handled it first. Standard fill-in politeness.</span></span></label>
+    <label class="cb"><input type="checkbox" name="preemptive_digipeat" value="1" {{if .St.PreemptiveDigipeat}}checked{{end}}> Preemptive digipeat<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Honor packets that list your callsign anywhere in the path, not just as the next hop. Prior unused hops are marked used (MARK mode) so the original path is preserved on air. Never triggers on generic <code>WIDEn-N</code>.</span></span></label>
     <label class="cb"><input type="checkbox" name="offline_mode" value="1" {{if .St.OfflineMode}}checked{{end}}> Offline mode<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Skip APRS-IS entirely. Off-grid digi setups.</span></span></label>
     <label class="cb"><input type="checkbox" name="messaging_only_mode" value="1" {{if .St.MessagingOnlyMode}}checked{{end}}> Messaging-only<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Gate only messages and acks RF↔IS. Skip beacons, weather, telemetry.</span></span></label>
   </div>
+  <label class="num-row"><span class="label-head">Recent-RF window (min)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">How recently a remote station must have been heard on RF before aprgo gates an APRS-IS message to them. aprgo defaults 30 min (APRS-IS convention) — raise for fixed digipeaters that beacon infrequently, lower for dense-traffic urban areas. Range 5–1440.</span></span></span>
+    <input type="number" name="igate_recent_rf_minutes" value="{{if .St.IGateRecentRFMinutes}}{{.St.IGateRecentRFMinutes}}{{else}}30{{end}}" min="5" max="1440">
+  </label>
+  <label class="num-row"><span class="label-head">IS→RF outer path<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Via path attached to the outer AX.25 frame when relaying an APRS-IS message to RF. Reference iGates default to <code>WIDE1-1</code> (one fill-in hop). Leave empty for direct only — appropriate for hilltop sites with wide coverage. Max 2 hops.</span></span></span>
+    <input type="text" name="igate_tx_path" value="{{.St.IGateTXPath}}" placeholder="WIDE1-1" maxlength="32">
+  </label>
+  <details class="advanced-tnc">
+    <summary>Advanced KISS parameters (optional)</summary>
+    <p class="dim small">Sent on every TNC connect. Leave at <code>0</code> to keep your TNC's own defaults — most modern TNCs (Mobilinkd, Direwolf, NinoTNC) ship with sane values. Only change if a specific vendor manual tells you to.</p>
+    <div class="grid-cols-fit-wide">
+      <label>TX Delay (ms)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Delay between keying PTT and starting data. 0 = use TNC default.</span></span>
+        <input type="number" name="tnc_tx_delay_ms" min="0" max="2550" step="10" value="{{.St.TNCTXDelayMs}}">
+      </label>
+      <label>Persist (0-255)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">CSMA p-persistence. KISS spec recommends 63 (≈25%). 0 = use TNC default.</span></span>
+        <input type="number" name="tnc_persist" min="0" max="255" value="{{.St.TNCPersist}}">
+      </label>
+      <label>Slot Time (ms)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Interval between persist samples. 0 = use TNC default.</span></span>
+        <input type="number" name="tnc_slot_time_ms" min="0" max="2550" step="10" value="{{.St.TNCSlotTimeMs}}">
+      </label>
+      <label>TX Tail (ms)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">PTT hold after data. Deprecated by KISS spec — your TNC ships with the right value (Mobilinkd TNC3 = 20ms). Leave at 0.</span></span>
+        <input type="number" name="tnc_tx_tail_ms" min="0" max="2550" step="10" value="{{.St.TNCTXTailMs}}">
+      </label>
+    </div>
+  </details>
   {{template "wizardNav" .}}
 </form>
 {{end}}

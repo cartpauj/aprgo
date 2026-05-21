@@ -68,7 +68,110 @@
     }
 
     var markers = new Map();
+    // lastKnownPositions persists callsign → [lat, lon] across marker
+    // removals so we can detect "did this station's position actually
+    // change since we last saw it?" — used to suppress the flash when a
+    // station drops out of the window and returns at the same coordinates
+    // (re-beaconing without moving shouldn't glow).
+    var lastKnownPositions = new Map();
     var windowSel = document.getElementById("window-min");
+    var searchInput = document.getElementById("map-search");
+    var filtersPanel = document.getElementById("map-filters-panel");
+    var filtersToggle = document.getElementById("map-filters-toggle");
+    var filtersCount = document.getElementById("map-filters-count");
+
+    // categoryFor maps a 2-char APRS symbol to a UI filter category.
+    // Symbol-table char + symbol code char are looked up against the
+    // primary (/) and alternate (\) tables; overlay-table calls fall
+    // through to the alt table's code mapping. Categories are kept
+    // intentionally coarse so the filter UI stays a single row.
+    function categoryFor(sym) {
+      if (!sym || sym.length < 2) return "other";
+      var c = sym[1];
+      // Vehicles
+      if (c === ">" || c === "k" || c === "j" || c === "v" || c === "u" || c === "U" || c === "R") return "vehicle";
+      // Aircraft
+      if (c === "'" || c === "X" || c === "^" || c === "g") return "aircraft";
+      // Marine
+      if (c === "Y" || c === "y" || c === "s" || c === "C") return "marine";
+      // Weather
+      if (c === "_" || c === "@" || c === "W") return "wx";
+      // Digi/iGate
+      if (c === "I" || c === "&" || c === "#") return "digi";
+      // Balloon / high-altitude
+      if (c === "O" || c === "S") return "balloon";
+      // Person / HT
+      if (c === "[" || c === "]" || c === "b" || c === "p") return "person";
+      // Fixed: house, dot, antenna, etc. Default for the alt table is
+      // "fixed" since alt-table codes are often facility markers.
+      if (c === "-" || c === "." || c === "r" || c === "h" || c === "H" || c === "x") return "fixed";
+      return "other";
+    }
+
+    // parseSearchTerms turns the comma-separated input into an array of
+    // {pattern: RegExp, exclude: bool} entries. Supports `*` as a wildcard
+    // (zero-or-more chars) and a leading `-` to negate (hide-matches).
+    // Empty input returns []; bare text matches anywhere as substring.
+    function parseSearchTerms(raw) {
+      if (!raw) return [];
+      return raw.split(",").map(function (t) {
+        t = t.trim().toUpperCase();
+        if (!t) return null;
+        var exclude = false;
+        if (t[0] === "-") {
+          exclude = true;
+          t = t.slice(1);
+          if (!t) return null;
+        }
+        // Escape regex metachars except `*`, then convert `*` → `.*`.
+        var pat = t.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+        // Anchored only if the term contained `*` (so "LY*" matches starts);
+        // bare text like "OKR" matches anywhere as substring.
+        if (t.indexOf("*") >= 0) pat = "^" + pat + "$";
+        return { pattern: new RegExp(pat), exclude: exclude };
+      }).filter(Boolean);
+    }
+
+    function passesSearch(call, terms) {
+      if (terms.length === 0) return true;
+      var includes = terms.filter(function (t) { return !t.exclude; });
+      var excludes = terms.filter(function (t) { return t.exclude; });
+      // Excluded matches always fail.
+      for (var i = 0; i < excludes.length; i++) {
+        if (excludes[i].pattern.test(call)) return false;
+      }
+      // If there are include terms, the call must match at least one.
+      // If only exclude terms, all non-excluded calls pass.
+      if (includes.length === 0) return true;
+      for (var j = 0; j < includes.length; j++) {
+        if (includes[j].pattern.test(call)) return true;
+      }
+      return false;
+    }
+
+    function currentFilters() {
+      var cats = {};
+      document.querySelectorAll(".map-cat").forEach(function (cb) {
+        cats[cb.value] = cb.checked;
+      });
+      return {
+        terms: parseSearchTerms((searchInput && searchInput.value) || ""),
+        cats: cats,
+      };
+    }
+
+    // refreshFilterCount sets the "(N active)" hint next to the filter
+    // toggle so a collapsed mobile panel still tells the user how many
+    // non-default filters are applied.
+    function refreshFilterCount() {
+      if (!filtersCount) return;
+      var f = currentFilters();
+      var n = f.terms.length;
+      document.querySelectorAll(".map-cat").forEach(function (cb) {
+        if (!cb.checked) n++;
+      });
+      filtersCount.textContent = n > 0 ? "(" + n + " active)" : "";
+    }
 
     function esc(s) {
       if (s == null) return "";
@@ -90,7 +193,7 @@
       var x = -((idx % 16) * 24);
       var y = -(Math.floor(idx / 16) * 24);
       var html =
-        '<span class="popup-icon" style="background-image:url(/static/aprs-symbols-24-' +
+        '<span class="popup-icon" style="background-image:url(/static/aprs-symbols-48-' +
         sprite + '.png);background-position:' + x + 'px ' + y + 'px;"></span>';
       if (symbol[0] !== "/" && symbol[0] !== "\\") {
         var oc = symbol.charCodeAt(0) - 0x21;
@@ -98,7 +201,7 @@
         var oy = -(Math.floor(oc / 16) * 24);
         html =
           '<span class="popup-icon-wrap">' + html +
-          '<span class="popup-icon-overlay" style="background-image:url(/static/aprs-symbols-24-2.png);background-position:' +
+          '<span class="popup-icon-overlay" style="background-image:url(/static/aprs-symbols-48-2.png);background-position:' +
           ox + 'px ' + oy + 'px;"></span></span>';
       }
       return html;
@@ -127,13 +230,31 @@
       }
       if (symBits.length) header += ' <span class="popup-symname">' + symBits.join(" · ") + "</span>";
       parts.push('<div class="popup-header">' + header + "</div>");
+      // Object-name banner — for `;` and `)` packets, the name (e.g. a
+      // repeater identifier like "446.25HRM") is the actually useful
+      // label, more so than the originating callsign. Show it just below
+      // the call so it's the first thing the eye lands on.
+      if (st.object_name) {
+        var objLabel = st.object_name;
+        if (st.object_killed) objLabel += " (killed)";
+        parts.push('<div class="popup-object">⊙ ' + esc(objLabel) + '</div>');
+      }
       parts.push(
         '<div class="popup-actions">' +
           '<a href="#" data-focus="' + esc(st.callsign) + '">👁 View only this station</a>' +
         '</div>'
       );
 
-      var facts = [["Position", st.lat.toFixed(4) + ", " + st.lon.toFixed(4)]];
+      var posValue = st.lat.toFixed(4) + ", " + st.lon.toFixed(4);
+      // Ambiguity (APRS spec §6) — when >0 the operator deliberately
+      // blanked trailing decimals, so the marker isn't street-accurate.
+      // Show the approximate uncertainty radius so operators don't trust
+      // the dot to a precision the sender didn't claim.
+      var ambLabels = ["", "≈ ±185 m", "≈ ±1.8 km", "≈ ±18 km", "≈ ±111 km"];
+      if (st.ambiguity && ambLabels[st.ambiguity]) {
+        posValue += '  ' + ambLabels[st.ambiguity];
+      }
+      var facts = [["Position", posValue]];
       if (st.altitude) facts.push(["Altitude", st.altitude.toLocaleString() + " ft"]);
       if (st.speed) facts.push(["Speed", st.speed + " mph"]);
       if (st.course) facts.push(["Heading", st.course + "°"]);
@@ -242,17 +363,84 @@
       }
     }
 
-    async function loadStations(mins) {
-      var r = await fetch("/api/stations?minutes=" + mins);
+    // flashMarker briefly highlights a marker so the user notices that it
+    // either just appeared (new station entering the window) or moved
+    // (existing station at a new position). For L.Marker we toggle a CSS
+    // class on the icon element; for L.CircleMarker we tweak the SVG path.
+    // The CSS animation auto-removes the class after ~2.5s.
+    function flashMarker(m) {
+      if (m._icon && m._icon.classList) {
+        m._icon.classList.remove("aprs-flash");
+        // Re-trigger animation by reading offsetWidth (forces reflow).
+        void m._icon.offsetWidth;
+        m._icon.classList.add("aprs-flash");
+        return;
+      }
+      // CircleMarker fallback: bump radius briefly.
+      if (typeof m.setStyle === "function" && typeof m.setRadius === "function") {
+        try {
+          m.setStyle({ color: "#f0c75e", fillColor: "#f0c75e", fillOpacity: 0.9 });
+          m.setRadius(9);
+          setTimeout(function () {
+            m.setStyle({ color: "#3fb950", fillColor: "#3fb950", fillOpacity: 0.6 });
+            m.setRadius(5);
+          }, 2500);
+        } catch (e) { /* ignore */ }
+      }
+    }
+
+    // initialLoadDone goes true after the first loadStations call so that
+    // the appear/move highlight only fires on subsequent refreshes —
+    // otherwise every marker would flash on page load, which is visual
+    // noise the user has no context for.
+    var initialLoadDone = false;
+    async function loadStations(win) {
+      var r = await fetch("/api/stations?window=" + encodeURIComponent(win));
       var list = await r.json();
-      markers.forEach(function (m) { map.removeLayer(m); });
-      markers.clear();
+      // Diff-update markers instead of remove-all-and-rebuild:
+      //  - existing marker for a callsign → update position + popup content
+      //  - new callsign → create + add
+      //  - vanished callsign → remove
+      // This way the marker whose popup is currently open never gets torn
+      // down, so the popup stays visible across refreshes (no flicker, no
+      // re-click).
+      var seen = new Set();
       var withPos = 0;
+      var filters = currentFilters();
       for (var i = 0; i < list.length; i++) {
         var st = list[i];
         if (!st.has_pos) continue;
         if (focused && st.callsign !== focused) continue;
+        // Callsign-search filter (LY*, KG7*, -W* …) and category filter
+        // (vehicles, weather, etc). Both are AND-combined. Filter happens
+        // BEFORE marker create/update so we don't carry stale entries
+        // when a filter newly excludes them.
+        if (!passesSearch(st.callsign.toUpperCase(), filters.terms)) continue;
+        var cat = categoryFor(st.symbol);
+        if (filters.cats[cat] === false) continue;
         withPos++;
+        seen.add(st.callsign);
+        // Did the position change since the LAST time we saw this station
+        // (across drop-outs from the window)? `prevPos` survives marker
+        // removal so a station that ages out and returns at the same spot
+        // doesn't glow. Re-beacons without movement never set this true.
+        var prevPos = lastKnownPositions.get(st.callsign);
+        var moved = !!prevPos && (Math.abs(prevPos[0] - st.lat) > 1e-6 || Math.abs(prevPos[1] - st.lon) > 1e-6);
+        var firstSighting = !prevPos;
+        lastKnownPositions.set(st.callsign, [st.lat, st.lon]);
+
+        var existing = markers.get(st.callsign);
+        if (existing) {
+          existing.setLatLng([st.lat, st.lon]);
+          // Refresh popup content — _but only if popup isn't currently
+          // open_, since setPopupContent on an open popup blanks and
+          // re-renders it (looks like a flicker to the user).
+          if (!existing.isPopupOpen || !existing.isPopupOpen()) {
+            existing.setPopupContent(buildPopup(st));
+          }
+          if (moved && initialLoadDone) flashMarker(existing);
+          continue;
+        }
         var icon = window.aprsIcon && st.symbol ? window.aprsIcon(st.symbol) : null;
         var m = icon
           ? L.marker([st.lat, st.lon], { icon: icon, title: st.callsign })
@@ -260,12 +448,25 @@
         m.bindPopup(buildPopup(st), { maxWidth: 360, minWidth: 260 });
         m.addTo(map);
         markers.set(st.callsign, m);
+        // Flash a fresh marker only when this is a station we genuinely
+        // haven't seen before, OR when its position is different from the
+        // last position we recorded for it. A station that aged out of
+        // the window and returned to the same coordinates won't glow.
+        if (initialLoadDone && (firstSighting || moved)) flashMarker(m);
       }
+      // Remove markers for stations that aged out of the window.
+      markers.forEach(function (m, call) {
+        if (!seen.has(call)) {
+          map.removeLayer(m);
+          markers.delete(call);
+        }
+      });
+      initialLoadDone = true;
       return { withPos: withPos, total: list.length };
     }
 
-    async function loadTrails(mins) {
-      var r = await fetch("/api/trails?minutes=" + mins);
+    async function loadTrails(win) {
+      var r = await fetch("/api/trails?window=" + encodeURIComponent(win));
       var body = await r.json();
       trails.forEach(function (pl) { map.removeLayer(pl); });
       trails.clear();
@@ -298,11 +499,11 @@
     }
 
     async function load() {
-      var mins = windowSel.value;
+      var win = windowSel.value;
       status.textContent = "loading…";
       try {
-        var sRes = await loadStations(mins);
-        var movers = await loadTrails(mins);
+        var sRes = await loadStations(win);
+        var movers = await loadTrails(win);
         if (focused) {
           status.textContent = "focused on " + focused;
         } else {
@@ -325,6 +526,34 @@
       }
     }
     windowSel.addEventListener("change", load);
+
+    // Search input: re-run the filter immediately on input (no debounce —
+    // filter is local map operation, no network). Also bumps the "(N
+    // active)" count next to the mobile filter toggle.
+    if (searchInput) {
+      searchInput.addEventListener("input", function () {
+        refreshFilterCount();
+        load();
+      });
+    }
+    // Category checkboxes: same — re-filter on change.
+    document.querySelectorAll(".map-cat").forEach(function (cb) {
+      cb.addEventListener("change", function () {
+        refreshFilterCount();
+        load();
+      });
+    });
+    // Mobile filter toggle — open/close the category panel. On desktop
+    // (>700px) the CSS hides the toggle and shows the panel inline, so
+    // this handler is a no-op there.
+    if (filtersToggle && filtersPanel) {
+      filtersToggle.addEventListener("click", function () {
+        var nowCollapsed = filtersPanel.getAttribute("data-collapsed") !== "true";
+        filtersPanel.setAttribute("data-collapsed", nowCollapsed ? "true" : "false");
+        filtersToggle.setAttribute("aria-expanded", nowCollapsed ? "false" : "true");
+      });
+    }
+    refreshFilterCount();
 
     // Focus toggling via popup links + the floating pill.
     map.on("popupopen", function (e) {

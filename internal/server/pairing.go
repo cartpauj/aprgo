@@ -131,8 +131,15 @@ func (s *Server) runPair(ctx context.Context, key string, job *pairJob) {
 	job.Channel = tnc.DiscoverSPPChannel(ctx, job.Addr)
 	// Reuse the existing rfcomm slot for this address if one is already
 	// bound — otherwise repeat pair attempts accumulate /dev/rfcomm0,
-	// rfcomm1, rfcomm2... each time.
-	job.Device = tnc.ChooseRFCOMMFor(job.Addr)
+	// rfcomm1, rfcomm2... each time. When all 32 slots are bound, surface
+	// the recovery hint instead of silently overwriting an active binding.
+	dev, derr := tnc.ChooseRFCOMMFor(job.Addr)
+	if derr != nil {
+		job.State = "err"
+		job.Err = derr.Error()
+		return
+	}
+	job.Device = dev
 	job.State = "ok"
 }
 

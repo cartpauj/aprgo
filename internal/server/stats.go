@@ -20,6 +20,13 @@ type statsCounters struct {
 	sentIS    atomic.Uint64 // RF→IS gates we emitted
 	sentRF    atomic.Uint64 // IS→RF + digipeats we emitted
 	digipeats atomic.Uint64 // subset of sentRF: digipeat actions
+	// igateMsgsRF counts ONLY IS→RF gated messages (the MSG_CNT metric in
+	// `?IGATE?` capability replies). Dedicated counter avoids the underflow
+	// race that would occur if we computed it as sentRF - digipeats from two
+	// separate atomic loads — atomics give per-variable linearizability, not
+	// snapshot consistency. Standard Prometheus-style "one counter per
+	// quantity" pattern.
+	igateMsgsRF atomic.Uint64
 	beacons   atomic.Uint64 // our own beacons transmitted
 
 	dropsTotal atomic.Uint64 // every gate Drop action

@@ -67,6 +67,12 @@ type Client struct {
 	// cancel of current session, set when a session is running so we can drop
 	// the connection on state change.
 	sessionCancel context.CancelFunc
+
+	// silentDrop is set when dropSession was called by the state-subscriber
+	// (a self-inflicted teardown after the operator saved a settings change),
+	// so the resulting "use of closed network connection" read error should
+	// not be surfaced as lastError to the UI.
+	silentDrop bool
 }
 
 const outQueueDepth = 256
@@ -98,20 +104,39 @@ func (c *Client) Connected() bool {
 
 // Run keeps a connection open, reconnecting on failure, until ctx is cancelled.
 // Reacts to state.Subscribe() events by dropping the current session.
+//
+// Returns only after the state-subscriber goroutine has exited so callers
+// can `wg.Wait()` on Run and trust no igate goroutine is still draining
+// past process shutdown.
 func (c *Client) Run(ctx context.Context) {
 	stateCh, cancelSub := c.st.Subscribe()
+	// Defer order matters (LIFO): subWG.Wait must run AFTER cancelSub, or
+	// Wait blocks forever on the goroutine below which is ranging over an
+	// open stateCh. Register Wait first → it runs last; cancelSub second
+	// → it runs first, closing the channel and letting the range loop
+	// exit before Wait checks.
+	var subWG sync.WaitGroup
+	defer subWG.Wait()
 	defer cancelSub()
 
+	subWG.Add(1)
 	go func() {
+		defer subWG.Done()
 		for snap := range stateCh {
 			_ = snap
+			c.mu.Lock()
+			c.silentDrop = true
+			c.mu.Unlock()
 			c.dropSession()
 		}
 	}()
 
-	// Reconnect backoff starts at 5s (per APRS-IS community practice — 1s
-	// hammers flapping servers) and caps at 60s.
-	backoff := 5 * time.Second
+	// Reconnect backoff: APRS-IS guidance is ≥30s between connect attempts
+	// to avoid connect-storms on flapping servers. Double on each failure,
+	// capped at 10 minutes.
+	const initialBackoff = 30 * time.Second
+	const maxBackoff = 10 * time.Minute
+	backoff := initialBackoff
 	for ctx.Err() == nil {
 		snap := c.st.Snapshot()
 		if snap.Callsign == "" || snap.Passcode == "" || snap.ISServer == "" {
@@ -123,22 +148,33 @@ func (c *Client) Run(ctx context.Context) {
 			continue
 		}
 		if err := c.session(ctx, snap); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("igate: session: %v (retry in %s)", err, backoff)
 			c.mu.Lock()
-			c.lastError = err.Error()
-			c.lastErrorAt = time.Now()
+			silent := c.silentDrop
+			c.silentDrop = false
+			if !silent {
+				c.lastError = err.Error()
+				c.lastErrorAt = time.Now()
+			}
 			c.mu.Unlock()
+			if silent {
+				log.Printf("igate: session ended after settings change (reconnecting in %s)", backoff)
+			} else {
+				log.Printf("igate: session: %v (retry in %s)", err, backoff)
+			}
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
 				return
 			}
-			if backoff < 60*time.Second {
+			if backoff < maxBackoff {
 				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
 			}
 			continue
 		}
-		backoff = 5 * time.Second
+		backoff = initialBackoff
 	}
 }
 
@@ -200,6 +236,21 @@ func (c *Client) session(parent context.Context, snap state.State) error {
 		c.mu.Unlock()
 	}()
 
+	// Context watcher: same pattern as rf.session — when ctx cancels,
+	// close the socket so the blocking ReadString in the loop below
+	// unblocks immediately. Without this we'd wait up to the 120s read
+	// deadline before noticing shutdown, which is longer than systemd's
+	// default 90s SIGTERM timeout → SIGKILL on every deploy.
+	stopWatcher := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-stopWatcher:
+		}
+	}()
+	defer close(stopWatcher)
+
 	log.Printf("igate: connected %s as %s", snap.ISServer, snap.Callsign)
 
 	// Writer goroutine: drains outQ into the socket. Exits when ctx cancels
@@ -216,6 +267,12 @@ func (c *Client) session(parent context.Context, snap state.State) error {
 					writeErr <- nil
 					return
 				}
+				// 30s write deadline guards against a wedged IS server stalling
+				// shutdown indefinitely (we hold a w.Flush that never returns,
+				// session() never returns, igate.Run never returns, wg.Wait
+				// blocks until systemd SIGKILL). 30s is generous — normal
+				// TNC2-line writes complete in milliseconds even on slow links.
+				_ = conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 				if _, err := w.Write(msg); err != nil {
 					writeErr <- err
 					return
@@ -230,7 +287,9 @@ func (c *Client) session(parent context.Context, snap state.State) error {
 
 	r := bufio.NewReader(conn)
 	for {
-		_ = conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+		// APRS-IS servers send `#` comment keepalives ~every 20 s; convention
+		// (Connecting.aspx) is to drop and reconnect after ~60 s of silence.
+		_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		line, err := r.ReadString('\n')
 		if err != nil {
 			cancel()
@@ -302,10 +361,18 @@ func parseTNC2(line, iface string) (ax25.Frame, bool) {
 // returned. While disconnected, packets continue to queue and are flushed by
 // the writer goroutine once a session reconnects.
 func (c *Client) Send(packet string) error {
-	if !strings.HasSuffix(packet, "\r\n") {
-		packet += "\r\n"
-	}
+	// Normalize line terminator: strip any trailing CR/LF, then append exactly
+	// "\r\n". Without the strip, a packet ending in bare "\n" would fail the
+	// HasSuffix("\r\n") check, get "\r\n" appended, and ship as "\n\r\n" —
+	// a blank line that servers ignore but wastes bytes.
+	packet = strings.TrimRight(packet, "\r\n") + "\r\n"
 	b := []byte(packet)
+	// APRS-IS Connecting.aspx: "No line may exceed 512 bytes including the
+	// CR/LF sequence." Servers truncate or drop over-long lines silently,
+	// so reject up front rather than emit something the upstream will mangle.
+	if len(b) > 512 {
+		return fmt.Errorf("igate: packet too long (%d bytes; APRS-IS max is 512 incl. CRLF)", len(b))
+	}
 	select {
 	case c.outQ <- b:
 		return nil

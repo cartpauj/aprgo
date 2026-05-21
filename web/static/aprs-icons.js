@@ -6,10 +6,10 @@
 //   col = (code - 0x21) & 0x0F
 //
 // Tables:
-//   '/'  → primary table (aprs-symbols-24-0.png)
-//   '\\' → alternate table (aprs-symbols-24-1.png)
+//   '/'  → primary table (aprs-symbols-48-0.png)
+//   '\\' → alternate table (aprs-symbols-48-1.png)
 //   any other char (0-9, A-Z) → alternate base + overlay char drawn from
-//     aprs-symbols-24-2.png at the position of that char.
+//     aprs-symbols-48-2.png at the position of that char.
 (function () {
   const SIZE = 24;
   const COLS = 16;
@@ -22,9 +22,9 @@
   }
 
   function spriteUrl(table) {
-    if (table === "/") return "/static/aprs-symbols-24-0.png";
-    if (table === "\\") return "/static/aprs-symbols-24-1.png";
-    return "/static/aprs-symbols-24-1.png"; // overlay base = alternate table
+    if (table === "/") return "/static/aprs-symbols-48-0.png";
+    if (table === "\\") return "/static/aprs-symbols-48-1.png";
+    return "/static/aprs-symbols-48-1.png"; // overlay base = alternate table
   }
 
   function isOverlay(table) {
@@ -55,7 +55,7 @@
     if (isOverlay(table)) {
       const oOff = offsetFor(table);
       html +=
-        '<div class="aprs-sym-overlay" style="background-image:url(/static/aprs-symbols-24-2.png);background-position:' +
+        '<div class="aprs-sym-overlay" style="background-image:url(/static/aprs-symbols-48-2.png);background-position:' +
         oOff.x +
         "px " +
         oOff.y +

@@ -8,6 +8,33 @@ const (
 	TFESC = 0xDD
 )
 
+// KISS command bytes (port 0 high-nibble). Per KA9Q 1987 KISS spec.
+const (
+	KISSCmdData      = 0x00
+	KISSCmdTXDelay   = 0x01 // value: TX delay in 10ms units
+	KISSCmdPersist   = 0x02 // value: 0-255 p-persistence
+	KISSCmdSlotTime  = 0x03 // value: slot time in 10ms units
+	KISSCmdTXTail    = 0x04 // value: TX tail in 10ms units (deprecated)
+	KISSCmdFullDup   = 0x05
+	KISSCmdHardware  = 0x06
+)
+
+// EncodeKISSParam builds a single-byte KISS configuration frame on port 0.
+// `cmd` is one of the KISSCmd* constants (excluding KISSCmdData).
+func EncodeKISSParam(cmd, value byte) []byte {
+	out := []byte{FEND, cmd, value}
+	// The value byte itself can be 0xC0/0xDB — escape if so.
+	if value == FEND {
+		out = []byte{FEND, cmd, FESC, TFEND, FEND}
+		return out
+	}
+	if value == FESC {
+		out = []byte{FEND, cmd, FESC, TFESC, FEND}
+		return out
+	}
+	return append(out, FEND)
+}
+
 // EncodeKISS wraps payload as a KISS data frame on port 0 (cmd byte 0x00).
 func EncodeKISS(payload []byte) []byte {
 	out := make([]byte, 0, len(payload)+8)
@@ -38,14 +65,22 @@ func DecodeKISS(seg []byte) []byte {
 	out := make([]byte, 0, len(seg))
 	i := 1
 	for i < len(seg) {
-		if seg[i] == FESC && i+1 < len(seg) {
+		if seg[i] == FESC {
+			// Per the KISS spec: "Receipt of any character other than
+			// TFESC or TFEND while in escaped mode is an error; no action
+			// is taken and frame assembly continues." So a FESC followed
+			// by an invalid byte drops both (no emit); a trailing lone
+			// FESC also drops. Previously we kept the byte-after as data
+			// and let trailing-FESC fall through as a literal 0xDB, both
+			// of which silently corrupted downstream AX.25 parse.
+			if i+1 >= len(seg) {
+				break
+			}
 			switch seg[i+1] {
 			case TFEND:
 				out = append(out, FEND)
 			case TFESC:
 				out = append(out, FESC)
-			default:
-				out = append(out, seg[i+1])
 			}
 			i += 2
 			continue
@@ -90,6 +125,15 @@ func (k *KISSFrameSplitter) Push(b []byte) [][]byte {
 			frames = append(frames, frame)
 		}
 		k.buf = k.buf[i+1:]
+		// Periodically reclaim the backing array. Repeated `k.buf[i+1:]`
+		// only slides the slice header; the underlying array peak-grows
+		// to MaxFrameBytes and stays there. When the slice has been slid
+		// a lot relative to its remaining content, copy down to the start.
+		if cap(k.buf) > 1024 && cap(k.buf)-len(k.buf) > cap(k.buf)/2 {
+			fresh := make([]byte, len(k.buf), cap(k.buf)/2+len(k.buf))
+			copy(fresh, k.buf)
+			k.buf = fresh
+		}
 	}
 }
 

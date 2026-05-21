@@ -3,7 +3,7 @@
   <div class="station-hero {{if .IsSelf}}is-self{{end}}">
     <div class="who">
       <div class="eyebrow">{{if .IsSelf}}This station · your iGate{{else}}Callsign · station detail{{end}}</div>
-      <h1 class="callsign">{{.Callsign}}{{if .IsSelf}}<span class="self-badge">YOU</span>{{end}}</h1>
+      <h1 class="callsign">{{if .IsSelf}}{{if .SelfBeacon.Symbol}}{{aprsIconLarge .SelfBeacon.Symbol}} {{end}}{{else}}{{if .Station.Symbol}}{{aprsIconLarge .Station.Symbol}} {{end}}{{end}}{{.Callsign}}{{if .IsSelf}}<span class="self-badge">YOU</span>{{end}}</h1>
       <div class="station-links">
         <a href="/stations">← All stations</a>
         {{if or .IsSelf (and .Station.Lat.Valid .Station.Lon.Valid)}}<span class="sep">·</span>
@@ -55,11 +55,14 @@
   {{else}}
 
   {{if .Station}}
+  {{if .ObjectName}}
+  <div class="object-banner">⊙ {{.ObjectName}}{{if .ObjectKilled}} <span class="dim">(killed)</span>{{end}}</div>
+  {{end}}
   <div class="station-facts-grid">
     {{if and .Station.Lat.Valid .Station.Lon.Valid}}
     <div class="station-fact">
       <div class="label">Last position</div>
-      <div class="value">{{printf "%.4f, %.4f" .Station.Lat.Float64 .Station.Lon.Float64}}</div>
+      <div class="value">{{printf "%.4f, %.4f" .Station.Lat.Float64 .Station.Lon.Float64}}{{if .AmbiguityLabel}} <span class="dim small">{{.AmbiguityLabel}}</span>{{end}}</div>
     </div>
     {{end}}
     <div class="station-fact">
@@ -78,7 +81,7 @@
     {{end}}
   </div>
 
-  {{if or .Station.Comment .Station.LastPath .Device .Weather .PHG .RNG}}
+  {{if or .Station.Comment .Station.LastPath .Device .Weather .PHG .RNG .TelemConfig}}
   <div class="station-cards">
     {{if .Device}}
     <div class="station-card">
@@ -91,9 +94,9 @@
     <div class="station-card wx-card">
       <div class="card-eyebrow">Weather</div>
       <dl class="wx-dl">
-        {{if .Weather.TempSet}}<dt>Temperature</dt><dd>{{.Weather.TempF}}°F</dd>{{end}}
+        {{if .Weather.TempSet}}<dt>Temperature</dt><dd>{{.Weather.TempF}}°F{{if .Weather.TempInSet}} <span class="dim">· indoor {{.Weather.TempInF}}°F</span>{{end}}</dd>{{end}}
         {{if .Weather.WindDirSet}}<dt>Wind</dt><dd>{{.Weather.WindSpeedMPH}} mph from {{.Weather.WindDirDeg}}°{{if .Weather.WindGustSet}} · gust {{.Weather.WindGustMPH}} mph{{end}}</dd>{{end}}
-        {{if .Weather.HumiditySet}}<dt>Humidity</dt><dd>{{.Weather.HumidityPct}}%</dd>{{end}}
+        {{if .Weather.HumiditySet}}<dt>Humidity</dt><dd>{{.Weather.HumidityPct}}%{{if .Weather.HumidityInSet}} <span class="dim">· indoor {{.Weather.HumidityInPct}}%</span>{{end}}</dd>{{end}}
         {{if .Weather.PressureSet}}<dt>Pressure</dt><dd>{{printf "%.1f mb" (divf (float .Weather.PressureTenthMb) 10.0)}}</dd>{{end}}
         {{if or .Weather.Rain1hSet .Weather.Rain24hSet .Weather.RainMidSet}}<dt>Rain</dt><dd>
           {{if .Weather.Rain1hSet}}{{printf "%.2f\"" (divf (float .Weather.Rain1hHundIn) 100.0)}} (1h){{end}}
@@ -112,6 +115,30 @@
       <div class="card-sub">~{{printf "%.0f" .PHG.RangeMiles}} mi estimated range (PHG)</div>
       {{end}}
       {{if .RNG}}<div class="card-sub">~{{.RNG.Miles}} mi declared range (RNG)</div>{{end}}
+    </div>
+    {{end}}
+    {{if .TelemConfig}}
+    <div class="station-card telem-card">
+      <div class="card-eyebrow">Telemetry channels</div>
+      {{if .TelemConfig.Title}}<div class="card-title">{{.TelemConfig.Title}}</div>{{end}}
+      <table class="telem-table">
+        <thead><tr><th>Ch</th><th>Name</th><th>Unit</th><th>Equation</th></tr></thead>
+        <tbody>
+          {{range $i := intSeq 0 4}}
+          <tr>
+            <td class="dim">A{{add $i 1}}</td>
+            <td>{{index $.TelemConfig.ParamNames $i}}</td>
+            <td class="dim">{{index $.TelemConfig.UnitNames $i}}</td>
+            <td class="mono small">{{telemEqn $.TelemConfig.Coeffs $i}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      <div class="card-sub small">Digital bits:
+        {{range $j := intSeq 0 7}}
+          {{$lbl := index $.TelemConfig.ParamNames (add $j 5)}}{{if $lbl}}<span class="bit-chip {{if index $.TelemConfig.Sense $j}}on{{end}}">{{$lbl}}</span>{{end}}
+        {{end}}
+      </div>
     </div>
     {{end}}
   </div>

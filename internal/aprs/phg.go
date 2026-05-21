@@ -38,7 +38,12 @@ type RNG struct {
 }
 
 var (
-	phgRE = regexp.MustCompile(`\bPHG(\d{4})\b`)
+	// PHG is "PHG" + 4 digits. Bob Bruninga's later PHGR variant tacks
+	// a 5th byte on (digit 0-9 for beacon-rate or literal "R" depending
+	// on dialect). We don't decode the rate but accept the suffix so
+	// the core PHG values are still extracted from PHGxxxxR / PHGxxxxx
+	// frames seen in the wild.
+	phgRE = regexp.MustCompile(`\bPHG(\d{4})[\dR]?\b`)
 	rngRE = regexp.MustCompile(`\bRNG(\d{4})\b`)
 )
 

@@ -38,10 +38,27 @@ type viscousEntry struct {
 type viscousQueue struct {
 	mu      sync.Mutex
 	entries map[string]*viscousEntry
+	closed  bool // set by Stop(); causes new enqueues to be rejected
 }
 
 func newViscousQueue() *viscousQueue {
 	return &viscousQueue{entries: make(map[string]*viscousEntry)}
+}
+
+// Stop cancels all pending viscous timers and refuses further enqueues.
+// Called from the server shutdown path so a pending fill-in TX cannot fire
+// against a partially-torn-down RF subsystem. The timer goroutine may race
+// our Stop() (Stop() returns false if the callback is already running) —
+// the callback itself also checks q.closed under the lock to handle that
+// race. Idempotent.
+func (q *viscousQueue) Stop() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.closed = true
+	for k, entry := range q.entries {
+		entry.timer.Stop()
+		delete(q.entries, k)
+	}
 }
 
 // enqueue stores `a` keyed by `contentHash` and schedules `fire` to run
@@ -50,6 +67,9 @@ func newViscousQueue() *viscousQueue {
 func (q *viscousQueue) enqueue(contentHash string, a gate.Action, fire func(gate.Action)) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if q.closed {
+		return false
+	}
 	if _, exists := q.entries[contentHash]; exists {
 		return false
 	}
@@ -60,11 +80,16 @@ func (q *viscousQueue) enqueue(contentHash string, a gate.Action, fire func(gate
 	entry.timer = time.AfterFunc(hold, func() {
 		q.mu.Lock()
 		stored, ok := q.entries[contentHash]
+		closed := q.closed
 		if ok && stored == entry {
 			delete(q.entries, contentHash)
 		}
 		q.mu.Unlock()
-		if ok && stored == entry {
+		// Closed check happens AFTER the map delete so a concurrent Stop()
+		// observes a clean map. The timer.Stop() in Stop() races against
+		// this callback — Stop() returns false when callback is already
+		// running — so the closed flag is the authoritative gate.
+		if ok && stored == entry && !closed {
 			fire(a)
 		}
 	})

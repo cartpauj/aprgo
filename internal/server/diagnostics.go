@@ -4,7 +4,7 @@ package server
 //
 // Every packet the gate package decides about returns one or more Actions;
 // when an Action.Kind is gate.Drop it carries a human-readable Reason
-// (e.g. "RF→IS filtered", "IS→RF: bulletin", "IS→RF: recipient not heard
+// (e.g. "RF→IS skipped: own callsign", "IS→RF: bulletin", "IS→RF: recipient not heard
 // on RF"). The dispatcher previously discarded those reasons. Now we
 // capture the last `dropRingCap` of them in a mutex-guarded ring so the
 // operator can answer "why wasn't that gated?" from a UI page without

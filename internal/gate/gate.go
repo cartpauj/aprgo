@@ -24,9 +24,44 @@ const maxPathHops = 8
 // network can support); standard practice is to silently drop them.
 const maxWIDEHops = 2
 
+// igateTXPath splits the operator-configured IS→RF outer-frame path into
+// the comma-separated hops expected by ax25.EncodeUIFrame. Empty config
+// returns nil (direct, no via path).
+func igateTXPath(s state.State) []string {
+	if s.IGateTXPath == "" {
+		return nil
+	}
+	parts := strings.Split(s.IGateTXPath, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // HeardChecker returns true if `call` has been heard on RF recently.
 // Pass a noop (always-false) checker if the store isn't ready yet.
 type HeardChecker func(call string) bool
+
+// MessagedTracker remembers callsigns we just gated an IS→RF message to,
+// so the next position packet from each such station can be gated to RF
+// once (per APRS-IS IGating.aspx — gives the local RF user a map fix
+// of the responder). Record on outgoing-message gate; Consume on the next
+// matching inbound position from IS.
+type MessagedTracker interface {
+	Record(call string)
+	Consume(call string) bool
+}
+
+type nopTracker struct{}
+
+func (nopTracker) Record(string)       {}
+func (nopTracker) Consume(string) bool { return false }
 
 // ActionKind is the category of action to dispatch.
 type ActionKind uint8
@@ -64,15 +99,18 @@ type Action struct {
 }
 
 // Decide returns the actions to perform for the given packet.
-func Decide(p aprs.Packet, s state.State, heardOnRF HeardChecker) []Action {
+func Decide(p aprs.Packet, s state.State, heardOnRF HeardChecker, msgTracker MessagedTracker) []Action {
 	if heardOnRF == nil {
 		heardOnRF = func(string) bool { return false }
+	}
+	if msgTracker == nil {
+		msgTracker = nopTracker{}
 	}
 	switch p.Frame.Origin {
 	case ax25.SrcRF:
 		return decideFromRF(p, s)
 	case ax25.SrcIS:
-		return decideFromIS(p, s, heardOnRF)
+		return decideFromIS(p, s, heardOnRF, msgTracker)
 	case ax25.SrcTX:
 		// Synthesized echo of our own transmission, published purely so
 		// the dashboard live-feed can show it. No gating decision applies.
@@ -93,10 +131,11 @@ func decideFromRF(p aprs.Packet, s state.State) []Action {
 
 	// Gate-to-IS decision
 	if s.GateRFtoIS {
-		if a := rfToISAction(p, s); a != nil {
+		a, skipReason := rfToISAction(p, s)
+		if a != nil {
 			actions = append(actions, *a)
 		} else {
-			actions = append(actions, Action{Kind: Drop, Reason: "RF→IS filtered"})
+			actions = append(actions, Action{Kind: Drop, Reason: skipReason})
 		}
 	}
 	if len(actions) == 0 {
@@ -105,37 +144,43 @@ func decideFromRF(p aprs.Packet, s state.State) []Action {
 	return actions
 }
 
-func rfToISAction(p aprs.Packet, s state.State) *Action {
+func rfToISAction(p aprs.Packet, s state.State) (*Action, string) {
 	if strings.EqualFold(p.Frame.Src, s.Callsign) {
-		return nil
+		return nil, "RF→IS skipped: own callsign"
 	}
 	// Messaging-only mode: skip every RF→IS gate except actual message +
 	// ack frames. The station still participates in person-to-person APRS
 	// chat as a bridge, but doesn't add position-beacon / weather /
 	// telemetry / status noise to the IS firehose.
-	if s.MessagingOnlyMode && !p.Decoded.IsMessage && !p.Decoded.IsAck {
-		return nil
+	if s.MessagingOnlyMode && !p.Decoded.IsMessage && !p.Decoded.IsAck && !p.Decoded.IsRej {
+		return nil, "RF→IS skipped: messaging-only mode (non-message frame)"
 	}
 	for _, hop := range p.Frame.Path {
 		hopUp := strings.ToUpper(strings.TrimSuffix(hop, "*"))
 		// IS-side path tokens (handles both TCPIP and TCPIP* via TrimSuffix above)
-		if hopUp == "NOGATE" || hopUp == "RFONLY" || hopUp == "TCPIP" || hopUp == "TCPXX" {
-			return nil
+		if hopUp == "NOGATE" || hopUp == "RFONLY" {
+			return nil, "RF→IS skipped: " + hopUp + " in path (sender opted out)"
+		}
+		if hopUp == "TCPIP" || hopUp == "TCPXX" {
+			return nil, "RF→IS skipped: " + hopUp + " in path (already from IS)"
 		}
 		// q-constructs (qAR, qAS, qAC, qAO, qAU, qAX) — packet already gated by someone else
 		if len(hopUp) == 3 && hopUp[0] == 'Q' && hopUp[1] == 'A' {
-			return nil
+			return nil, "RF→IS skipped: " + hopUp + " in path (already gated)"
 		}
 	}
 	if len(p.Frame.Info) == 0 {
-		return nil
+		return nil, "RF→IS skipped: empty info field"
 	}
 	// Skip queries and packets already wrapped as third-party (loop prevention)
-	if p.Frame.Info[0] == '?' || p.Frame.Info[0] == '}' {
-		return nil
+	if p.Frame.Info[0] == '?' {
+		return nil, "RF→IS skipped: query packet"
+	}
+	if p.Frame.Info[0] == '}' {
+		return nil, "RF→IS skipped: third-party packet"
 	}
 	tnc2 := buildGatedTNC2(p, s)
-	return &Action{Kind: SendIS, Payload: tnc2, Reason: "RF→IS"}
+	return &Action{Kind: SendIS, Payload: tnc2, Reason: "RF→IS"}, ""
 }
 
 // digipeatAction decides whether to digipeat `p` and returns the resulting
@@ -208,36 +253,49 @@ func digipeatAction(p aprs.Packet, s state.State) *Action {
 	if idx < 0 {
 		return nil
 	}
+	var alias string
 	n, N, ok := parseWIDE(p.Frame.Path[idx])
 	if !ok {
-		return nil
-	}
-	// Eligibility per role.
-	switch {
-	case n == 1 && N == 1 && !s.DigipeatWIDE1:
-		return nil
-	case n == 1 && N != 1:
-		return nil // WIDE1-N with N≠1 is non-standard
-	case n == 2 && (!s.DigipeatWIDE2 || N < 1 || N > maxWIDEHops):
-		return nil
-	case n >= 3:
-		return nil // refuse legacy abusive widths
+		// Try operator-configured regional flood alias (SSn-N) — e.g.
+		// "MD6-6" in the Mid-Atlantic, "ARIZ2-2" in Arizona. Per fix14439,
+		// these are WIDE-class (only full-digi role honors them, not
+		// fill-in) and decrement identically.
+		alias, n, N, ok = parseFloodAlias(p.Frame.Path[idx], s.RegionalAliases)
+		if !ok || !s.DigipeatWIDE2 || N < 1 || N > maxWIDEHops || n > maxWIDEHops {
+			return nil
+		}
+	} else {
+		// Eligibility per role (WIDE only).
+		switch {
+		case n == 1 && N == 1 && !s.DigipeatWIDE1:
+			return nil
+		case n == 1 && N != 1:
+			return nil // WIDE1-N with N≠1 is non-standard
+		case n == 2 && (!s.DigipeatWIDE2 || N < 1 || N > maxWIDEHops):
+			return nil
+		case n >= 3:
+			return nil // refuse legacy abusive widths
+		}
 	}
 
+	tokenPrefix := "WIDE"
+	if alias != "" {
+		tokenPrefix = alias
+	}
 	myCallUsed := s.Callsign + "*"
 	var newPath []string
 	if N <= 1 {
-		// Last hop — replace WIDEn-N entirely with our used-marker.
+		// Last hop — replace token entirely with our used-marker.
 		newPath = make([]string, len(p.Frame.Path))
 		copy(newPath, p.Frame.Path)
 		newPath[idx] = myCallUsed
 	} else {
 		// N > 1 — decrement and prepend our used-marker. The remaining
-		// WIDEn-(N-1) token tells downstream digis there are hops left.
+		// <token>n-(N-1) tells downstream digis there are hops left.
 		newPath = make([]string, 0, len(p.Frame.Path)+1)
 		newPath = append(newPath, p.Frame.Path[:idx]...)
 		newPath = append(newPath, myCallUsed)
-		newPath = append(newPath, fmt.Sprintf("WIDE%d-%d", n, N-1))
+		newPath = append(newPath, fmt.Sprintf("%s%d-%d", tokenPrefix, n, N-1))
 		newPath = append(newPath, p.Frame.Path[idx+1:]...)
 	}
 	if len(newPath) > maxPathHops {
@@ -284,6 +342,39 @@ func buildPreemptPath(path []string, myCallIdx int, myCall string) []string {
 	return out
 }
 
+// parseFloodAlias matches a hop against a configured list of regional
+// flood aliases (SSn-N forms like ARIZ1-1, MASS2-2, NCN6-6) and returns
+// the alias, n, N if matched. Per fix14439 these are WIDE-class tokens:
+// only full-digi-mode stations should honor them, and they decrement
+// exactly like WIDEn-N. Aliases are matched case-insensitively. Empty
+// alias list disables this entirely.
+func parseFloodAlias(hop string, aliases []string) (alias string, n, N int, ok bool) {
+	if len(aliases) == 0 {
+		return "", 0, 0, false
+	}
+	hopUp := strings.ToUpper(strings.TrimSuffix(hop, "*"))
+	for _, a := range aliases {
+		aUp := strings.ToUpper(strings.TrimSpace(a))
+		if aUp == "" || !strings.HasPrefix(hopUp, aUp) {
+			continue
+		}
+		rest := hopUp[len(aUp):]
+		dash := strings.IndexByte(rest, '-')
+		if dash <= 0 || dash == len(rest)-1 {
+			continue
+		}
+		var err error
+		if n, err = strconv.Atoi(rest[:dash]); err != nil || n < 1 || n > 7 {
+			continue
+		}
+		if N, err = strconv.Atoi(rest[dash+1:]); err != nil || N < 0 || N > 7 {
+			continue
+		}
+		return aUp, n, N, true
+	}
+	return "", 0, 0, false
+}
+
 // parseWIDE extracts (n, N) from a hop token of the form "WIDEn-N".
 // Returns ok=false for anything else, including used-bit variants like
 // "WIDE2-1*" (we only inspect unused hops at the call site).
@@ -306,7 +397,7 @@ func parseWIDE(hop string) (n, N int, ok bool) {
 	return n, N, true
 }
 
-func decideFromIS(p aprs.Packet, s state.State, heardOnRF HeardChecker) []Action {
+func decideFromIS(p aprs.Packet, s state.State, heardOnRF HeardChecker, msgTracker MessagedTracker) []Action {
 	if !s.GateIStoRF || !s.TXEnable {
 		return []Action{{Kind: Drop, Reason: "IS→RF disabled"}}
 	}
@@ -316,6 +407,32 @@ func decideFromIS(p aprs.Packet, s state.State, heardOnRF HeardChecker) []Action
 	// Never gate our own packets that round-tripped through IS back to RF.
 	if strings.EqualFold(p.Frame.Src, s.Callsign) {
 		return []Action{{Kind: Drop, Reason: "IS→RF: own packet from IS"}}
+	}
+	// Never re-wrap an already third-party-wrapped frame; doing so produces
+	// nested envelopes and risks amplification loops between iGates.
+	if len(p.Frame.Info) > 0 && p.Frame.Info[0] == '}' {
+		return []Action{{Kind: Drop, Reason: "IS→RF: already third-party wrapped"}}
+	}
+
+	// IS→RF "responder position" courtesy gate (IGating.aspx):
+	// If the source of this IS packet has a position fix AND is someone we
+	// just gated a message TO from RF, pass exactly one of their position
+	// packets out to RF so the local RF user gets a map pin for the person
+	// they're talking to. Consume removes the entry — one shot only, to
+	// avoid filling local airspace with a remote station's beacon stream.
+	if !p.Decoded.IsMessage && p.Decoded.Lat != nil && p.Decoded.Lon != nil {
+		if msgTracker.Consume(p.Frame.Src) {
+			dest := state.DefaultBeaconDest
+			thirdParty := "}" + p.Frame.Src + ">" + p.Frame.Dest + ",TCPIP*," + s.Callsign + "*:" + string(p.Frame.Info)
+			return []Action{{
+				Kind:   SendRF,
+				RFSrc:  s.Callsign,
+				RFDest: dest,
+				RFPath: igateTXPath(s),
+				RFInfo: []byte(thirdParty),
+				Reason: "IS→RF position←" + p.Frame.Src + " (msg-responder)",
+			}}
+		}
 	}
 
 	// IS→RF policy: only relay APRS messages addressed to a callsign
@@ -342,14 +459,35 @@ func decideFromIS(p aprs.Packet, s state.State, heardOnRF HeardChecker) []Action
 			return []Action{{Kind: Drop, Reason: "IS→RF: telemetry " + pfx[:4] + " declaration"}}
 		}
 	}
-	// Bulletins (recipient starts with "BLN") are broadcasts, not directed
-	// messages. Standard iGate practice is not to relay them to RF.
-	if strings.HasPrefix(strings.ToUpper(p.Decoded.MsgTo), "BLN") {
-		return []Action{{Kind: Drop, Reason: "IS→RF: bulletin"}}
+	// NWS / SKYWARN / CWA weather bulletins bypass the heard-on-RF gate.
+	// Per Bruninga's WXSVR design, these emanate from authoritative weather
+	// sources (callsigns like `NWS-LWX`, `SKYCAR`, `CWA-EAX`, `WXSVR`) and
+	// deliver severe-weather alerts to local stations. Their addressees are
+	// often group aliases (`SKYWARN`, `NWS-LWX`, `ALL`, `BLNxAAAAA`) that
+	// nobody literally TXes from, so the standard heard-on-RF check would
+	// always reject them. Source-prefix whitelist matches aprx / Xastir
+	// convention. Also note: BLN bulletins from WX sources go through here
+	// instead of being dropped by the BLN check below.
+	srcUp := strings.ToUpper(p.Frame.Src)
+	isWXBulletin := strings.HasPrefix(srcUp, "NWS-") ||
+		strings.HasPrefix(srcUp, "NWS_") ||
+		strings.HasPrefix(srcUp, "SKY") ||
+		strings.HasPrefix(srcUp, "CWA") ||
+		strings.HasPrefix(srcUp, "WXSVR")
+	// Bulletins (recipient starts with "BLN") from non-WX sources are
+	// broadcasts; standard iGate practice is not to relay them to RF.
+	if !isWXBulletin && strings.HasPrefix(strings.ToUpper(p.Decoded.MsgTo), "BLN") {
+		return []Action{{Kind: Drop, Reason: "IS→RF: bulletin (non-WX)"}}
 	}
-	if !heardOnRF(p.Decoded.MsgTo) {
+	if !isWXBulletin && !heardOnRF(p.Decoded.MsgTo) {
 		return []Action{{Kind: Drop, Reason: "IS→RF: recipient not heard on RF"}}
 	}
+
+	// Remember the *message originator* so their next position packet from
+	// IS can be gated to RF once (the local RF user gets a map pin for the
+	// person they're talking to). The recipient is already on RF; it's the
+	// remote sender whose position the local user lacks.
+	msgTracker.Record(p.Frame.Src)
 
 	// Third-party form per convention: }SRC>DEST,TCPIP*,MYCALL*:info
 	// The used-bit (*) on TCPIP marks the IS leg as already traversed; MYCALL*
@@ -367,8 +505,12 @@ func decideFromIS(p aprs.Packet, s state.State, heardOnRF HeardChecker) []Action
 }
 
 // buildGatedTNC2 produces the APRS-IS form of an RF-originated packet,
-// inserting a q-construct ("qAR" = gated by an RF-equipped iGate) and our
-// callsign before the info field.
+// inserting a q-construct and our callsign before the info field.
+//
+// qAR = "gated by an RF-equipped iGate that can also relay messages from IS
+// back to RF" — only valid when we actually can TX (TXEnable + GateIStoRF +
+// numeric passcode). qAO = "receive-only iGate" — used when we can't gate
+// IS→RF, so APRS-IS won't try to route return traffic through us.
 func buildGatedTNC2(p aprs.Packet, s state.State) string {
 	var b strings.Builder
 	b.WriteString(p.Frame.Src)
@@ -379,7 +521,11 @@ func buildGatedTNC2(p aprs.Packet, s state.State) string {
 		b.WriteString(hop)
 	}
 	b.WriteByte(',')
-	b.WriteString("qAR,")
+	if s.TXEnable && s.GateIStoRF && s.Passcode != "" && s.Passcode != "-1" {
+		b.WriteString("qAR,")
+	} else {
+		b.WriteString("qAO,")
+	}
 	b.WriteString(s.Callsign)
 	b.WriteByte(':')
 	b.Write(p.Frame.Info)

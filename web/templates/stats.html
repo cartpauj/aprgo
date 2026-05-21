@@ -10,7 +10,7 @@
     <div class="stats-card">
       <div class="eyebrow">Uptime</div>
       <div class="stats-big">{{dur .Uptime}}</div>
-      <div class="stats-sub">since {{.StartedAt.Format "2006-01-02 15:04"}}</div>
+      <div class="stats-sub">since {{fmtDateTime .StartedAt .TZ .TF}}</div>
     </div>
     <div class="stats-card">
       <div class="eyebrow">RF connection</div>

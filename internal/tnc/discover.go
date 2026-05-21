@@ -196,6 +196,49 @@ func Bind(ctx context.Context, addr string, channel int) (string, error) {
 	return fmt.Sprintf("/dev/rfcomm%d", idx), nil
 }
 
+// CurrentRfcommMAC queries the kernel for the bluetooth MAC currently bound
+// to `dev` (e.g. "/dev/rfcomm0") and returns it as an uppercase string.
+//
+// Returns ("", nil) if no binding exists OR `dev` isn't an rfcomm device.
+// Returns ("", err) only when the `rfcomm` subprocess itself fails to run.
+//
+// Used by aprgo's self-heal logic: state.TNCAddr is supposed to track the
+// MAC of whatever's bound to TNCSerial, but the wizard's serial-picker
+// path can clear it. By asking the kernel directly, we recover even when
+// state is stale.
+func CurrentRfcommMAC(ctx context.Context, dev string) (string, error) {
+	idx := strings.TrimPrefix(dev, "/dev/rfcomm")
+	if idx == dev || idx == "" {
+		return "", nil
+	}
+	out, err := run(ctx, 3*time.Second, "rfcomm")
+	if err != nil {
+		return "", err
+	}
+	// rfcomm with no args prints one line per binding:
+	//   rfcomm0: 34:81:F4:6C:5E:26 channel 6 connected [reuse-dlc ...]
+	prefix := "rfcomm" + idx + ":"
+	sc := bufio.NewScanner(strings.NewReader(out))
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		// First whitespace-separated token after the prefix is the MAC.
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			return "", nil
+		}
+		mac := strings.ToUpper(fields[0])
+		if btAddrRE.MatchString(mac) {
+			return mac, nil
+		}
+		return "", nil
+	}
+	return "", nil
+}
+
 // Release tears down an rfcomm binding.
 func Release(ctx context.Context, dev string) error {
 	idx := strings.TrimPrefix(dev, "/dev/rfcomm")
@@ -250,7 +293,7 @@ func DiscoverSPPChannel(ctx context.Context, addr string) int {
 //
 // We compare against <DEVICE_MAC> (the TNC's address, parts[3]), not the
 // host adapter's MAC (parts[1]).
-func ChooseRFCOMMFor(addr string) string {
+func ChooseRFCOMMFor(addr string) (string, error) {
 	addrUp := strings.ToUpper(addr)
 	if out, err := exec.Command("rfcomm", "-a").Output(); err == nil {
 		lines := strings.Split(string(out), "\n")
@@ -266,23 +309,30 @@ func ChooseRFCOMMFor(addr string) string {
 			name := strings.TrimSuffix(parts[0], ":") // "rfcomm0"
 			deviceMAC := strings.ToUpper(parts[3])    // <DEVICE_MAC>
 			if deviceMAC == addrUp {
-				return "/dev/" + name
+				return "/dev/" + name, nil
 			}
 		}
 	}
 	return ChooseFreeRFCOMM()
 }
 
+// ErrNoFreeRFCOMM is returned when all 32 BlueZ RFCOMM slots are already
+// bound. The operator's recovery is `sudo rfcomm release all` (or release
+// a specific N they know they're not using).
+var ErrNoFreeRFCOMM = errors.New("no free /dev/rfcommN slot (all 32 bound — try `sudo rfcomm release all`)")
+
 // ChooseFreeRFCOMM returns the lowest /dev/rfcommN slot that isn't already
-// bound or present.
-func ChooseFreeRFCOMM() string {
+// bound or present. Returns ErrNoFreeRFCOMM when all 32 are taken — callers
+// must NOT fall back to a hardcoded slot, since binding to an already-bound
+// index silently kicks off whoever's using it.
+func ChooseFreeRFCOMM() (string, error) {
 	for i := 0; i < 32; i++ {
 		path := fmt.Sprintf("/dev/rfcomm%d", i)
 		if _, err := os.Stat(path); err != nil {
-			return path
+			return path, nil
 		}
 	}
-	return "/dev/rfcomm0"
+	return "", ErrNoFreeRFCOMM
 }
 
 var channelRE = regexp.MustCompile(`(?i)Channel:\s*(\d+)`)

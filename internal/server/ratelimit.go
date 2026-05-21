@@ -3,6 +3,7 @@ package server
 import (
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -73,11 +74,24 @@ func (l *loginLimiter) Success(ip string) {
 
 // clientIP extracts the remote IP, honoring X-Forwarded-For if and only if the
 // server is reached on loopback (i.e. behind a trusted local reverse proxy).
-// Otherwise uses RemoteAddr directly.
+// Otherwise uses RemoteAddr directly. Trusting XFF only on loopback prevents
+// spoofing from a non-proxy direct client.
+//
+// Header parsing: XFF lists hops left-to-right as the request traveled, so
+// the LEFTMOST entry is the original client. We use the leftmost.
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			// Leftmost = original client; rest are proxy hops.
+			if comma := strings.IndexByte(xff, ','); comma >= 0 {
+				return strings.TrimSpace(xff[:comma])
+			}
+			return strings.TrimSpace(xff)
+		}
 	}
 	return host
 }

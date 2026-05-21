@@ -97,7 +97,7 @@
 <a href="/messages?with={{.Peer}}" class="chat-conv {{if eq $.Peer .Peer}}active{{end}}" data-call="{{.Peer}}">
   <div class="chat-conv-head">
     <span class="chat-conv-call">{{.Peer}}</span>
-    <time class="chat-conv-time rel-time" data-ts="{{unix .LastTime}}" title="{{.LastTime.Format "2006-01-02 15:04:05"}}"></time>
+    <time class="chat-conv-time rel-time" data-ts="{{unix .LastTime}}" title="{{fmtDateTime .LastTime $.TZ $.TF}}"></time>
   </div>
   <div class="chat-conv-preview">
     {{if eq .LastDir "out"}}<span class="chat-conv-arrow out">↗</span>{{else}}<span class="chat-conv-arrow in">↙</span>{{end}}
@@ -119,7 +119,7 @@
 <div class="chat-bubble {{if eq .Direction "out"}}out{{else}}in{{end}}" data-id="{{.ID}}">
   <div class="chat-bubble-body">{{.Body}}</div>
   <div class="chat-bubble-meta mono">
-    <time class="rel-time" data-ts="{{unix .Time}}" title="{{.Time.Format "2006-01-02 15:04:05"}}"></time>
+    <time class="rel-time" data-ts="{{unix .Time}}" title="{{fmtDateTime .Time $.TZ $.TF}}"></time>
     {{if .ViaRF}}<span class="msg-tag rf">RF</span>{{end}}
     {{if .ViaIS}}<span class="msg-tag is">IS</span>{{end}}
     {{if eq .Direction "out"}}

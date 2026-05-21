@@ -9,6 +9,7 @@ package aprs
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -23,14 +24,38 @@ type Decoded struct {
 	Altitude   int     // feet, 0 if unknown
 	Speed      int     // mph, -1 if unknown
 	Course     int     // degrees, -1 if unknown
+	Ambiguity  int     // 0-4; uncompressed-position only. 0 = full precision.
+	// BulletinGroup is set when MsgTo matches the bulletin form `BLNxAAAAA`
+	// (APRS101 §14): byte 4 is the identifier char (`0`-`9` numbered,
+	// `A`-`Z` announcement), bytes 5-9 optional group name (alphanumeric,
+	// space-padded). Empty when MsgTo is not a bulletin. Lets UI render
+	// bulletins as broadcasts instead of misclassifying them as 1:1 msgs.
+	BulletinGroup string
 	Frequency  string  // e.g. "144.390 MHz", empty if unknown
+	// FreqTone: CTCSS/PL tone in Hz (e.g. "100.0", "127.3"), DCS code with
+	// "D" prefix, or empty. Parsed from `Txxx` / `Dnnn` per Bruninga
+	// freqspec.txt — the "front-panel" form used by Kenwood D7/D710 etc.
+	FreqTone string
+	// FreqOffset: repeater offset, e.g. "+600" / "-600" (kHz), or empty.
+	FreqOffset string
 	Status     string  // Mic-E status string, e.g. "In Service"
+	// MicEFixOld is true when the Mic-E packet declared its GPS fix as
+	// "old" (data type indicators 0x1E/0x1F per APRS101 §10.1.1) rather
+	// than current (0x1C/0x1D). Lets the UI render a "GPS data is stale"
+	// hint instead of silently rendering a possibly-outdated position.
+	MicEFixOld bool
 	IsMessage  bool
 	MsgTo      string
 	MsgBody    string
 	MsgID      string
 	IsAck      bool
+	IsRej      bool
 	AckedID    string
+
+	// ReplyAckID is the piggyback ack from APRS 1.1 reply-ack form
+	// (`body{MM}AA`). When non-empty, the sender is acknowledging their
+	// peer's outgoing msgID AA at the same time as sending their own MM.
+	ReplyAckID string
 
 	// MsgOrigSrc is set when the packet was wrapped in a third-party header
 	// (info starts with "}SRC>DEST,PATH:..."). Holds the inner SRC so the UI
@@ -44,6 +69,13 @@ type Decoded struct {
 	TelemAnalog  [5]float64
 	TelemBits    [8]bool
 
+	// TelemConfig is non-nil when the packet is a telemetry-configuration
+	// message (PARM. / UNIT. / EQNS. / BITS.) per APRS101 §13.4. These
+	// look like 1:1 messages on the wire but describe the labels / units /
+	// coefficients / sense bits for a station's T# data — applying them
+	// turns generic "Analog 0..4" into properly named channels.
+	TelemConfig *TelemConfig
+
 	// Weather is non-nil when a positional weather report was decoded out
 	// of the comment. Fields are populated per APRS spec §12; check the
 	// *Set flags on individual subfields to distinguish "not reported"
@@ -56,6 +88,18 @@ type Decoded struct {
 
 	// RNG is non-nil when an explicit RNGxxxx range circle was decoded.
 	RNG *RNG
+
+	// ObjectKilled is true when an object report (`;`) or item report (`)`)
+	// was marked as killed (live/kill flag is `_` rather than `*`/`!`).
+	ObjectKilled bool
+
+	// ObjectName is the 9-char object name (trimmed) for `;` packets, or
+	// the variable-length (3-9 char) item name for `)` packets. Empty for
+	// non-object/item packets. Per APRS101 §11, object names are the most
+	// useful field on these packets (typically a repeater identifier, WX
+	// station name, etc.) — surfacing them is what lets the UI show e.g.
+	// "446.25HRM" instead of just "killed object".
+	ObjectName string
 
 	// isMicE is set when decodeMicE produced this struct. Used to scope
 	// Mic-E-only post-processing (the "_X" status code trim) so non-Mic-E
@@ -111,27 +155,66 @@ func decodeWithDepth(info, dest string, depth int) Decoded {
 	case '!', '=':
 		decodeUncompressedOrCompressed(info[1:], &d)
 	case '/', '@':
-		// position with timestamp; skip 7-char timestamp
-		if len(info) >= 8 {
+		// position with timestamp; skip 7-char timestamp `DDHHMM[zh/]`.
+		// APRS101 §5 also lists pre-1.0 DTIs `/1`..`/9` (raw GPS-port
+		// passthrough); spec footnote marks them "reserved, do not transmit"
+		// and no modern client emits them. A real timestamp has the form
+		// 6 digits + suffix in {z,h,/}; legacy /N doesn't match.
+		if len(info) >= 8 && looksLikeTimestamp(info[1:8]) {
 			decodeUncompressedOrCompressed(info[8:], &d)
 		}
 	case ';':
-		// object: ;NAME9NNN*/_ddmm.mmN/dddmm.mmW_...
-		if len(info) > 11 {
-			decodeUncompressedOrCompressed(info[11:], &d)
+		// Object: ; + 9-char name + live/kill (* or _) + 7-char timestamp + position
+		if len(info) > 18 {
+			d.ObjectName = strings.TrimRight(info[1:10], " ")
+			if info[10] == '_' {
+				d.ObjectKilled = true
+			}
+			decodeUncompressedOrCompressed(info[18:], &d)
 		}
 	case ')':
-		// item: )NAME!_pos...   or   )NAME*_pos...
-		// Item-packet format: `)NAME!data` (alive) or `)NAME_data` (killed)
-		if i := strings.IndexAny(info[1:], "!_"); i >= 0 && len(info) > i+2 {
+		// item: )NAME!_pos... or )NAME_pos... — APRS101 §11 says NAME is
+		// 3-9 chars and may not contain `!`, `_`, or `*`. Enforce length
+		// here so a malformed `)X!...` (1-char name) doesn't decode bogus
+		// position from chars that should have been the name body.
+		if i := strings.IndexAny(info[1:], "!_"); i >= 3 && i <= 9 && len(info) > i+2 {
+			d.ObjectName = info[1 : 1+i]
+			if info[1+i] == '_' {
+				d.ObjectKilled = true
+			}
 			decodeUncompressedOrCompressed(info[i+2:], &d)
 		}
+	case '_':
+		// Positionless weather report per APRS101 §12.5:
+		//   _MMDDHHMM<weather fields>
+		// Position is implicit (advertised separately, usually as an Object).
+		// Strip the 8-byte MMDDHHMM timestamp and run the weather parser on
+		// the rest. No symbol is implied; leave Symbol unset.
+		if len(info) > 9 {
+			if w, _ := parseWeather(info[9:]); w != nil {
+				d.Weather = w
+			}
+		}
+	case '$':
+		// Raw NMEA-0183 sentence per APRS101 §5. Common forms: $GPRMC
+		// (recommended minimum: lat, lon, speed-knots, course) and $GPGGA
+		// (lat, lon, MSL altitude meters). Legacy/cheap trackers that
+		// don't bother encoding APRS position strings emit raw NMEA here.
+		decodeNMEA(info, &d)
 	case '`', '\'':
 		decodeMicE(info, dest, &d)
 	case ':':
 		decodeMessage(info[1:], &d)
 	case '>':
-		d.Comment = strings.TrimRight(info[1:], "\r\n")
+		// APRS101 §16: status report is `>Comments` or `>DDHHMMzComments`
+		// where the optional 7-byte timestamp is 6 digits + literal 'z'.
+		// Strip when present so display shows the status text, not the
+		// timestamp prefix.
+		rest := info[1:]
+		if len(rest) >= 7 && rest[6] == 'z' && isAllDigits(rest[:6]) {
+			rest = rest[7:]
+		}
+		d.Comment = strings.TrimRight(rest, "\r\n")
 	case 'T':
 		if strings.HasPrefix(info, "T#") {
 			decodeTelemetry(info[2:], &d)
@@ -147,6 +230,11 @@ func postProcess(d *Decoded) {
 	if d.Symbol != "" {
 		d.SymbolName = symbolNameOf(d.Symbol)
 	}
+	// Sanitize free-form text fields regardless of whether Comment is set.
+	// Object names / message bodies may carry 8-bit chars even when Comment
+	// is empty.
+	d.MsgBody = sanitizeText(d.MsgBody)
+	d.ObjectName = sanitizeText(d.ObjectName)
 	if d.Comment == "" {
 		return
 	}
@@ -169,7 +257,10 @@ func postProcess(d *Decoded) {
 		if m := csRegex.FindStringSubmatch(c); m != nil {
 			course, _ := strconv.Atoi(m[1])
 			knots, _ := strconv.Atoi(m[2])
-			if course >= 0 && course <= 360 {
+			// APRS convention: valid course range is 1-360 (360=north),
+			// 0 is reserved as "course unknown" (Ham::APRS::FAP). Leave
+			// d.Course = -1 (unknown) when raw value is 0.
+			if course >= 1 && course <= 360 {
 				d.Course = course
 			}
 			d.Speed = int(float64(knots) * 1.15078)
@@ -182,6 +273,26 @@ func postProcess(d *Decoded) {
 		freq := strings.TrimSpace(c[m[2]:m[3]])
 		d.Frequency = freq + " MHz"
 		// don't strip from comment — operators usually want to keep it visible
+		// Per Bruninga freqspec.txt, the front-panel form follows the
+		// frequency with optional CTCSS tone (T100, T127), DCS code
+		// (Dnnn), and offset (+600/-600 in kHz). Extract when present.
+		tail := c[m[3]:]
+		if tm := freqToneRegex.FindStringSubmatch(tail); tm != nil {
+			if tm[1] != "" {
+				d.FreqTone = tm[1] // CTCSS Hz (digits)
+			} else if tm[2] != "" {
+				d.FreqTone = "D" + tm[2] // DCS code
+			}
+		}
+		if om := freqOffsetRegex.FindStringSubmatch(tail); om != nil {
+			// Per Bruninga freqspec.txt the digits are 10s-of-kHz, so
+			// "+060" → 600 kHz → +0.600 MHz, "-005" → 50 kHz → -0.050 MHz.
+			// Format as MHz with three decimals so the unit is unambiguous.
+			if khz, err := strconv.Atoi(om[2]); err == nil {
+				mhz := float64(khz) * 10 / 1000.0
+				d.FreqOffset = om[1] + strconv.FormatFloat(mhz, 'f', 3, 64) + " MHz"
+			}
+		}
 	}
 
 	// Mic-E status code at end: "_X" where X is one of 0-9, :, ;, <, =.
@@ -215,7 +326,43 @@ func postProcess(d *Decoded) {
 		c = stripped
 	}
 
-	d.Comment = c
+	// Compact base-91 telemetry per he.fi/doc/aprs-base91-comment-telemetry.txt:
+	//   |ssaaaaaaaa|        (seq + 1-5 analog channels, each 2 base-91 chars)
+	// Each 2-char pair encodes 0..8280 = (c0-33)*91 + (c1-33). Skip if the
+	// run is the wrong length or contains non-base-91 chars — falls through
+	// silently so a literal `|...|` in a free-form comment isn't misread.
+	if i := strings.IndexByte(c, '|'); i >= 0 {
+		if j := strings.IndexByte(c[i+1:], '|'); j > 0 {
+			block := c[i+1 : i+1+j]
+			if n := len(block); n >= 4 && n <= 12 && n%2 == 0 {
+				valid := true
+				for k := 0; k < n; k++ {
+					if block[k] < 0x21 || block[k] > 0x7b {
+						valid = false
+						break
+					}
+				}
+				if valid {
+					d.IsTelemetry = true
+					seq := (int(block[0])-33)*91 + int(block[1]-33)
+					d.TelemSeq = seq
+					channels := (n - 2) / 2
+					for a := 0; a < channels && a < 5; a++ {
+						p := 2 + a*2
+						d.TelemAnalog[a] = float64((int(block[p])-33)*91 + int(block[p+1]-33))
+					}
+					c = c[:i] + c[i+1+j+1:]
+				}
+			}
+		}
+	}
+
+	// Final pass: sanitize Comment. Strips control chars and converts
+	// Latin-1 8-bit characters (°, ·, ±, etc.) to UTF-8 so they render
+	// correctly in the web UI. Applied here at the end so the per-DTI
+	// parsers and regex post-processing above can work on raw bytes
+	// before encoding conversion.
+	d.Comment = sanitizeText(c)
 }
 
 // looksLikeWeather is a cheap pre-filter: returns true when the comment
@@ -243,6 +390,10 @@ var (
 	altRegex  = regexp.MustCompile(`/A=([0-9]{6})`)
 	csRegex   = regexp.MustCompile(`^([0-9]{3})/([0-9]{3})\b`)
 	freqRegex = regexp.MustCompile(`\b(\d{2,3}\.\d{3,4})\s?MHz\b`)
+	// Tone: `T100` (CTCSS Hz, omit decimal point) OR `D023` (DCS).
+	freqToneRegex = regexp.MustCompile(`\bT(\d{2,3})\b|\bD(\d{3})\b`)
+	// Offset: `+600` or `-600` (kHz). Bruninga freqspec.txt.
+	freqOffsetRegex = regexp.MustCompile(`(?:^|\s)([+-])(\d{3,4})(?:\s|$)`)
 )
 
 // Mic-E status codes — single-char shorthand at end of comment.
@@ -360,7 +511,27 @@ func decodeUncompressed(s string, d *Decoded) {
 		return
 	}
 	pos := []byte(s[:19])
-	// Position ambiguity: spaces become specific digits per APRS spec
+	// Position ambiguity: spaces become specific digits per APRS spec §6.
+	// Count lat-side blanks to derive level (0..4) so consumers can render
+	// "approximate location" without recomputing.
+	//   level 1: pos[6]   blank (~185 m)
+	//   level 2: pos[5,6] blank (~1.8 km)
+	//   level 3: pos[3,5,6] blank (~18 km)
+	//   level 4: pos[2,3,5,6] blank (~111 km)
+	amb := 0
+	if pos[6] == ' ' {
+		amb = 1
+	}
+	if pos[5] == ' ' {
+		amb = 2
+	}
+	if pos[3] == ' ' {
+		amb = 3
+	}
+	if pos[2] == ' ' {
+		amb = 4
+	}
+	d.Ambiguity = amb
 	if pos[2] == ' ' {
 		pos[2] = '3'
 	}
@@ -450,6 +621,41 @@ func decodeCompressed(s string, d *Decoded) {
 	d.Lat = &lat
 	d.Lon = &lon
 	d.Symbol = string(symTable) + string(symCode)
+
+	// cs (bytes 10-11) and T (byte 12) per APRS101 Ch. 9.
+	// cs[0] == ' ' (0x20) signals "no extension data" — csT are ignored.
+	// cs[0] == '{' (0x7B) means cs encodes a range circle in miles.
+	// T-byte NMEA-source bits 3-4 == 10 (GGA) means cs encodes altitude.
+	// Otherwise (cs[0] in '!'-'z' i.e. 33-122) cs encodes course/speed.
+	// T byte is itself printable: actual_value = ascii - 33.
+	c0 := s[10]
+	c1 := s[11]
+	tByte := int(s[12]) - 33
+	switch {
+	case c0 == ' ':
+		// no extension data
+	case c0 == '{':
+		// range circle: range_miles = 2 * 1.08 ^ (s-33)
+		if c1 >= 0x21 && c1 <= 0x7b {
+			r := 2.0 * math.Pow(1.08, float64(c1-33))
+			d.RNG = &RNG{Miles: int(r + 0.5)}
+		}
+	case tByte >= 0 && ((tByte>>3)&0x03) == 0x02:
+		// NMEA source = GGA → cs encodes altitude in feet:
+		// alt = 1.002 ^ ((c-33)*91 + (s-33))
+		if c0 >= 0x21 && c0 <= 0x7b && c1 >= 0x21 && c1 <= 0x7b {
+			alt := math.Pow(1.002, float64(int(c0-33)*91+int(c1-33)))
+			d.Altitude = int(alt + 0.5)
+		}
+	default:
+		// course/speed: course = (c-33)*4 deg, speed = 1.08^(s-33) - 1 knots
+		if c0 >= '!' && c0 <= 'z' && c1 >= 0x21 && c1 <= 0x7b {
+			d.Course = int(c0-33) * 4
+			knots := math.Pow(1.08, float64(c1-33)) - 1
+			d.Speed = int(knots*1.15078 + 0.5) // knots → mph (matches uncompressed)
+		}
+	}
+
 	if len(s) > 13 {
 		d.Comment = strings.TrimRight(s[13:], "\r\n")
 	}
@@ -552,6 +758,10 @@ func decodeMicE(info, dest string, d *Decoded) {
 	if dstcall[1] == '_' || dstcall[0] == '_' {
 		return
 	}
+	// Surface the ambiguity level on Decoded so UI/consumers can render
+	// "approximate location" the same way as for uncompressed positions.
+	// Previously posambig was only used internally to pick the lat formula.
+	d.Ambiguity = posambig
 
 	latDeg, _ := strconv.Atoi(string(dstcall[0:2]))
 	latMin, _ := strconv.Atoi(string(dstcall[2:4]))
@@ -572,6 +782,15 @@ func decodeMicE(info, dest string, d *Decoded) {
 		lonDeg -= 190
 	}
 	lonMin := int(body[1]) - 28
+	// Per APRS101 §10 / mic-e-types.txt: valid lonMin is 0-59. Encoder may
+	// shift by 60 when the raw byte is in the 88-97 range, but values 60-69
+	// (post-subtract) are reserved/invalid — silently wrapping them produces
+	// bogus positions. Treat as malformed: skip setting lat/lon but continue
+	// to harvest status / symbol / comment from the rest of the packet.
+	posValid := true
+	if lonMin >= 60 && lonMin <= 69 {
+		posValid = false
+	}
 	if lonMin >= 60 {
 		lonMin -= 60
 	}
@@ -595,8 +814,10 @@ func decodeMicE(info, dest string, d *Decoded) {
 	if dst[5] >= 0x50 {
 		lon = -lon
 	}
-	d.Lat = &lat
-	d.Lon = &lon
+	if posValid {
+		d.Lat = &lat
+		d.Lon = &lon
+	}
 	d.Symbol = string(body[7]) + string(body[6])
 
 	// Mic-E speed/course (bytes 3-5 of info, but we operate on body so body[3..5])
@@ -621,7 +842,9 @@ func decodeMicE(info, dest string, d *Decoded) {
 		if speedKt >= 0 && speedKt < 800 {
 			d.Speed = int(float64(speedKt) * 1.15078) // knots → mph
 		}
-		if course >= 0 && course < 360 {
+		// APRS convention: valid course range is 1-360 (360=north),
+		// 0 is reserved as "course unknown" (Ham::APRS::FAP).
+		if course >= 1 && course <= 360 {
 			d.Course = course
 		} else {
 			d.Course = -1
@@ -632,14 +855,36 @@ func decodeMicE(info, dest string, d *Decoded) {
 	//   `"Cv}<comment>      (typical: backtick + 2-3 bytes + '}')
 	//   ''Bw}<comment>
 	//   <0x1d>><comment>    (status byte + comment, no '}')
-	// Drop the extended block if it ends with '}' within ~8 bytes; else
-	// just trim leading control bytes.
+	// Per APRS101 §10.1.5 altitude is encoded as 3 base-91 chars immediately
+	// before a literal '}': altitude_m = (c0-33)*91² + (c1-33)*91 + (c2-33) − 10000.
+	// Without this decode the altitude is silently dropped on every Mic-E
+	// packet from Kenwood TM-D710 / TH-D74 / Yaesu FT2D-3D etc.
 	if len(body) > 8 {
 		c := body[8:]
-		if i := indexByteBounded(c, '}', 8); i >= 0 {
-			c = c[i+1:]
-		} else {
+		// Only treat `}` within the first 8 bytes as the altitude terminator
+		// when the 3 preceding bytes are valid base-91 — otherwise it's a
+		// literal `}` in the comment text and the leading bytes are real
+		// comment content (e.g. "73 de KX}").
+		altDecoded := false
+		if i := indexByteBounded(c, '}', 8); i >= 3 {
+			a, b, cc := c[i-3], c[i-2], c[i-1]
+			if a >= 0x21 && a <= 0x7b && b >= 0x21 && b <= 0x7b && cc >= 0x21 && cc <= 0x7b {
+				altM := (int(a-33)*91+int(b-33))*91 + int(cc-33) - 10000
+				// Convert to feet to match the rest of Decoded.Altitude.
+				// 1 meter = 3.28084 feet.
+				d.Altitude = int(float64(altM)*3.28084 + 0.5)
+				c = c[i+1:]
+				altDecoded = true
+			}
+		}
+		if !altDecoded {
+			// No valid altitude prefix; trim leading control bytes including
+			// Mic-E 0x1C-0x1F fix-status indicators (APRS101 §10.1.1).
+			// Capture old-fix indicator before discarding.
 			for len(c) > 0 && c[0] < 0x20 {
+				if c[0] == 0x1E || c[0] == 0x1F {
+					d.MicEFixOld = true
+				}
 				c = c[1:]
 			}
 		}
@@ -656,6 +901,99 @@ func decodeMicE(info, dest string, d *Decoded) {
 // where NNN is sequence (0..999 or "MIC"), a* are analog channels (1..3 digits,
 // 0..255 conventional but tracker software emits floats), and b* are 8 binary
 // digits ('0' or '1'). Any of the trailing fields may be empty.
+// decodeNMEA parses a raw NMEA-0183 sentence (DTI `$`) for position and,
+// where available, course/speed/altitude. Supports the two forms commonly
+// emitted by legacy/cheap GPS trackers per APRS101 §5: $GPRMC and $GPGGA.
+// Other sentences ($GPGLL, $GPVTG, $GPWPL) were defined but rarely seen
+// in modern APRS traffic; skip them.
+//
+// Format reminders (no checksum verification — we trust the bytes that
+// got through TNC):
+//
+//	$GPRMC,hhmmss,A,llll.ll,N,yyyyy.yy,W,sss.s,ccc.c,ddmmyy,...*CS
+//	$GPGGA,hhmmss,llll.ll,N,yyyyy.yy,W,fix,nn,h.h,alt,M,...*CS
+func decodeNMEA(info string, d *Decoded) {
+	// Strip checksum tail if present (everything after `*`).
+	if star := strings.IndexByte(info, '*'); star > 0 {
+		info = info[:star]
+	}
+	fields := strings.Split(info, ",")
+	if len(fields) < 1 {
+		return
+	}
+	switch fields[0] {
+	case "$GPRMC":
+		// fields: 0=$GPRMC 1=time 2=A/V(status) 3=lat 4=N/S 5=lon 6=E/W 7=knots 8=course
+		if len(fields) < 9 || fields[2] != "A" {
+			return // no fix
+		}
+		lat, ok := nmeaCoord(fields[3], fields[4], false)
+		if !ok {
+			return
+		}
+		lon, ok := nmeaCoord(fields[5], fields[6], true)
+		if !ok {
+			return
+		}
+		d.Lat = &lat
+		d.Lon = &lon
+		if knots, err := strconv.ParseFloat(fields[7], 64); err == nil && knots > 0 {
+			d.Speed = int(knots*1.15078 + 0.5) // knots → mph
+		}
+		if course, err := strconv.ParseFloat(fields[8], 64); err == nil && course >= 1 && course <= 360 {
+			d.Course = int(course + 0.5)
+		}
+	case "$GPGGA":
+		// fields: 0=$GPGGA 1=time 2=lat 3=N/S 4=lon 5=E/W 6=fix 7=sats 8=hdop 9=alt 10=M
+		if len(fields) < 10 {
+			return
+		}
+		if fields[6] == "0" || fields[6] == "" {
+			return // no fix
+		}
+		lat, ok := nmeaCoord(fields[2], fields[3], false)
+		if !ok {
+			return
+		}
+		lon, ok := nmeaCoord(fields[4], fields[5], true)
+		if !ok {
+			return
+		}
+		d.Lat = &lat
+		d.Lon = &lon
+		if alt, err := strconv.ParseFloat(fields[9], 64); err == nil {
+			d.Altitude = int(alt*3.28084 + 0.5) // meters → feet
+		}
+	}
+}
+
+// nmeaCoord parses an NMEA lat/lon field. lat form `DDMM.MM[MM]`; lon form
+// `DDDMM.MM[MM]`. Hemisphere is N/S or E/W. Returns the decimal-degrees
+// value and ok flag.
+func nmeaCoord(val, hem string, isLon bool) (float64, bool) {
+	if val == "" {
+		return 0, false
+	}
+	dotIdx := strings.IndexByte(val, '.')
+	if dotIdx < 3 || (isLon && dotIdx < 4) {
+		return 0, false
+	}
+	degLen := dotIdx - 2
+	deg, err := strconv.Atoi(val[:degLen])
+	if err != nil {
+		return 0, false
+	}
+	min, err := strconv.ParseFloat(val[degLen:], 64)
+	if err != nil {
+		return 0, false
+	}
+	v := float64(deg) + min/60.0
+	if hem == "S" || hem == "W" {
+		v = -v
+	}
+	return v, true
+}
+
 func decodeTelemetry(body string, d *Decoded) {
 	parts := strings.SplitN(body, ",", 8) // seq + 5 analog + bits + (rest = comment)
 	if len(parts) < 2 {
@@ -705,24 +1043,104 @@ func decodeMessage(rest string, d *Decoded) {
 	}
 	to := strings.TrimRight(rest[:9], " ")
 	body := rest[10:]
+	// Telemetry config messages (PARM./UNIT./EQNS./BITS.) look like 1:1
+	// messages on the wire but describe a station's telemetry channels.
+	// Detected before setting IsMessage so the UI doesn't surface them
+	// in the chat thread — they belong on the station-detail page where
+	// they can be applied to subsequent T# data.
+	if tc := parseTelemConfig(body); tc != nil {
+		d.TelemConfig = tc
+		d.MsgTo = to
+		return
+	}
 	d.IsMessage = true
 	d.MsgTo = to
+	// Bulletin group: `BLN` + identifier byte + optional 0-5 chars group.
+	// Examples: "BLN1ARES" → group "ARES"; "BLNAWX" → group "WX"; "BLN4"
+	// → no group. APRS101 §14.
+	if len(to) >= 4 && strings.HasPrefix(strings.ToUpper(to), "BLN") {
+		if len(to) > 4 {
+			d.BulletinGroup = strings.TrimRight(to[4:], " ")
+		}
+	}
 	if strings.HasPrefix(body, "ack") && len(body) > 3 {
 		d.IsAck = true
-		d.AckedID = strings.TrimRight(body[3:], "\r\n")
+		d.AckedID, d.ReplyAckID = splitAckBody(body[3:])
 		return
 	}
 	if strings.HasPrefix(body, "rej") && len(body) > 3 {
-		d.IsAck = true
-		d.AckedID = strings.TrimRight(body[3:], "\r\n")
+		d.IsRej = true
+		d.AckedID, d.ReplyAckID = splitAckBody(body[3:])
 		return
 	}
-	if i := strings.LastIndex(body, "{"); i >= 0 {
+	if i := strings.IndexByte(body, '{'); i >= 0 {
 		d.MsgBody = body[:i]
-		d.MsgID = strings.TrimRight(body[i+1:], "\r\n")
+		tail := strings.TrimRight(body[i+1:], "\r\n")
+		// APRS 1.1 reply-ack: tail is `MM` (no piggyback) or `MM}AA` (piggyback
+		// ack of peer's earlier msgID AA). Per aprs11/replyacks.txt the `}` is
+		// the chosen separator because it isn't a valid base-91 byte.
+		if j := strings.IndexByte(tail, '}'); j >= 0 {
+			d.MsgID = sanitizeMsgID(tail[:j])
+			d.ReplyAckID = sanitizeMsgID(tail[j+1:])
+		} else {
+			d.MsgID = sanitizeMsgID(tail)
+		}
 	} else {
 		d.MsgBody = strings.TrimRight(body, "\r\n")
 	}
+}
+
+// sanitizeMsgID strips anything outside printable ASCII from an APRS message
+// ID. Real radios sometimes emit garbage in the msgID field (stuck buffer,
+// broken firmware) which would otherwise render as � in the UI. APRS message
+// IDs are spec'd as printable ASCII (alphanumeric per APRS 1.0, base-91
+// printable per APRS 1.1 reply-ack form), so this is always safe.
+// looksLikeTimestamp reports whether `s` (7 bytes) is a valid APRS101 §6
+// timestamp: 6 digits followed by a suffix in {z,h,/}. Used to distinguish
+// `/091245z…` (position-with-timestamp) from legacy `/9…` GPS-port DTIs.
+func looksLikeTimestamp(s string) bool {
+	if len(s) != 7 {
+		return false
+	}
+	if s[6] != 'z' && s[6] != 'h' && s[6] != '/' {
+		return false
+	}
+	return isAllDigits(s[:6])
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func sanitizeMsgID(s string) string {
+	s = strings.TrimRight(s, "\r\n")
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x20 && s[i] < 0x7F {
+			out = append(out, s[i])
+		}
+	}
+	return string(out)
+}
+
+// splitAckBody splits the body after "ack" or "rej" into the acked-msg-ID
+// and an optional piggyback free-ACK ID per APRS 1.1 reply-acks. Form is
+// `MM` or `MM}AA` — `}` is the separator (chosen because it isn't a valid
+// base-91 byte). Both halves are sanitized.
+func splitAckBody(s string) (acked, piggyback string) {
+	s = strings.TrimRight(s, "\r\n")
+	if j := strings.IndexByte(s, '}'); j >= 0 {
+		return sanitizeMsgID(s[:j]), sanitizeMsgID(s[j+1:])
+	}
+	return sanitizeMsgID(s), ""
 }
 
 // ---- Symbol table validators (verbatim from aprx) ----
@@ -739,12 +1157,44 @@ func validSymTableUncompressed(c byte) bool {
 		(c >= 0x41 && c <= 0x5A) // A-Z
 }
 
+// sanitizeASCII keeps only printable ASCII (0x20-0x7E). Use for fields
+// that MUST be strict ASCII — message IDs, callsigns, structured fields.
+// For free-form display text (comments, status, message bodies) use
+// sanitizeText below, which preserves Latin-1 by converting to UTF-8 so
+// real-world transmitters' degree symbols, fancy quotes, etc. render
+// correctly in the web UI instead of as the U+FFFD replacement char.
 func sanitizeASCII(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
-	for _, r := range s {
-		if r >= 32 && r < 127 {
-			b.WriteRune(r)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 0x20 && c < 0x7F {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// sanitizeText cleans a free-form display field: strips control chars,
+// preserves printable ASCII (0x20-0x7E), and converts Latin-1 (0xA0-0xFF)
+// to UTF-8 so 8-bit characters like ° (0xB0), · (0xB7), ± (0xB1) — which
+// real APRS clients freely emit — render correctly in the browser rather
+// than as replacement chars.
+//
+// 0x80-0x9F (Latin-1 C1 controls) are dropped: they're either control
+// chars or extended ASCII glyphs that vary by codepage, never useful.
+func sanitizeText(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 0x20 && c < 0x7F:
+			b.WriteByte(c)
+		case c >= 0xA0:
+			// Latin-1 → UTF-8: U+0080..U+00FF encodes as 0xC2/0xC3 + low byte.
+			b.WriteByte(0xC0 | (c >> 6))
+			b.WriteByte(0x80 | (c & 0x3F))
 		}
 	}
 	return b.String()

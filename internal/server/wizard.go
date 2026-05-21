@@ -218,8 +218,44 @@ func (s *Server) wizardSave(w http.ResponseWriter, r *http.Request) {
 
 	switch step {
 	case "identity":
-		d.Draft.Callsign = strings.TrimSpace(r.FormValue("callsign"))
-		d.Draft.Passcode = strings.TrimSpace(r.FormValue("passcode"))
+		base := strings.ToUpper(strings.TrimSpace(r.FormValue("callsign_base")))
+		ssidStr := strings.TrimSpace(r.FormValue("callsign_ssid"))
+		// Validate base callsign: 1-6 alphanumeric.
+		if !callsignBaseRE.MatchString(base) {
+			d.LastErr = "Callsign must be 1-6 letters and digits (no SSID — pick that separately)."
+			s.renderStep(w, r, d)
+			return
+		}
+		ssid := 0
+		if ssidStr != "" {
+			n, err := strconv.Atoi(ssidStr)
+			if err != nil || n < 0 || n > 15 {
+				d.LastErr = "SSID must be 0-15."
+				s.renderStep(w, r, d)
+				return
+			}
+			ssid = n
+		}
+		if ssid == 0 {
+			d.Draft.Callsign = base
+		} else {
+			d.Draft.Callsign = fmt.Sprintf("%s-%d", base, ssid)
+		}
+		passcode := strings.TrimSpace(r.FormValue("passcode"))
+		// Allow empty (defer to later) or the "-1" RX-only sentinel; otherwise
+		// require numeric AND matching the well-known hash for this callsign.
+		// The aprs-is project asks software not to redistribute the algorithm,
+		// but every iGate implementation (Xastir, aprx, Direwolf, YAAC,
+		// APRSdroid) computes it locally — and catching a typo here is much
+		// friendlier than a mystery "unverified" status after connect.
+		if passcode != "" && passcode != "-1" {
+			if !aprsISPasscodeMatches(d.Draft.Callsign, passcode) {
+				d.LastErr = fmt.Sprintf("Passcode doesn't match callsign %s. Double-check the number from aprs.fi or your APRS-IS provider.", d.Draft.Callsign)
+				s.renderStep(w, r, d)
+				return
+			}
+		}
+		d.Draft.Passcode = passcode
 	case "location":
 		lat, latErr := strconv.ParseFloat(strings.TrimSpace(r.FormValue("lat")), 64)
 		lon, lonErr := strconv.ParseFloat(strings.TrimSpace(r.FormValue("lon")), 64)
@@ -251,7 +287,15 @@ func (s *Server) wizardSave(w http.ResponseWriter, r *http.Request) {
 		case strings.HasPrefix(kindPath, "serial::"):
 			d.Draft.TNCKind = state.TNCSerial
 			d.Draft.TNCSerial = strings.TrimPrefix(kindPath, "serial::")
-			d.Draft.TNCAddr = ""
+			// Do NOT clear TNCAddr here. Two valid scenarios:
+			//   1. Operator is re-confirming an already-paired Bluetooth
+			//      setup whose /dev/rfcommN appears in the serial list —
+			//      MAC must stay or the btSupervisor goes inactive.
+			//   2. Operator wired up rfcomm themselves (rfcomm.conf,
+			//      external script). MAC is already empty; stays empty.
+			// The btSupervisor's self-heal logic in rf/btbind.go can also
+			// adopt the MAC from the kernel at runtime, but preserving
+			// here avoids the round-trip.
 		case strings.HasPrefix(kindPath, "bt::"):
 			// Classic BT pairing can take 20-30s; run it as an async job and
 			// return immediately so the wizard isn't a blank-screen wait.
@@ -285,8 +329,49 @@ func (s *Server) wizardSave(w http.ResponseWriter, r *http.Request) {
 		d.Draft.OfflineMode = r.FormValue("offline_mode") == "1"
 		d.Draft.MessagingOnlyMode = r.FormValue("messaging_only_mode") == "1"
 		d.Draft.PreemptiveDigipeat = r.FormValue("preemptive_digipeat") == "1"
+		if v := r.FormValue("igate_recent_rf_minutes"); v != "" {
+			if m, err := strconv.Atoi(v); err == nil && m >= 5 && m <= 1440 {
+				d.Draft.IGateRecentRFMinutes = m
+			}
+		}
+		if v := r.FormValue("igate_tx_path"); v != "" {
+			if hops, perr := validateBeaconPath(v); perr == nil && len(hops) <= 2 {
+				d.Draft.IGateTXPath = strings.Join(hops, ",")
+			}
+		} else {
+			d.Draft.IGateTXPath = ""
+		}
+		// Optional KISS params — same clamp logic as the settings page.
+		// Range [0, 2550] in 10ms units; 0 means "don't emit the command".
+		clampKiss := func(v int) int {
+			if v < 0 {
+				return 0
+			}
+			if v > 2550 {
+				return 2550
+			}
+			return v
+		}
+		if v, err := strconv.Atoi(r.FormValue("tnc_tx_delay_ms")); err == nil {
+			d.Draft.TNCTXDelayMs = clampKiss(v)
+		}
+		if v, err := strconv.Atoi(r.FormValue("tnc_persist")); err == nil {
+			if v < 0 {
+				v = 0
+			}
+			if v > 255 {
+				v = 255
+			}
+			d.Draft.TNCPersist = v
+		}
+		if v, err := strconv.Atoi(r.FormValue("tnc_slot_time_ms")); err == nil {
+			d.Draft.TNCSlotTimeMs = clampKiss(v)
+		}
+		if v, err := strconv.Atoi(r.FormValue("tnc_tx_tail_ms")); err == nil {
+			d.Draft.TNCTXTailMs = clampKiss(v)
+		}
 	case "beacon":
-		comment := strings.TrimSpace(r.FormValue("beacon_comment"))
+		comment := sanitizeBeaconComment(r.FormValue("beacon_comment"))
 		secs := state.DefaultBeaconEveryS
 		if mins, err := strconv.Atoi(r.FormValue("beacon_every_min")); err == nil && mins >= 10 {
 			secs = mins * 60
@@ -368,6 +453,8 @@ func (s *Server) commitWizardDraft(d *wizardDraft) error {
 		st.OfflineMode = d.Draft.OfflineMode
 		st.MessagingOnlyMode = d.Draft.MessagingOnlyMode
 		st.PreemptiveDigipeat = d.Draft.PreemptiveDigipeat
+		st.IGateRecentRFMinutes = d.Draft.IGateRecentRFMinutes
+		st.IGateTXPath = d.Draft.IGateTXPath
 		st.SetupComplete = true
 		return nil
 	})
@@ -516,6 +603,7 @@ func applyModeDefaults(st *state.State, m state.Mode) {
 		st.GateIStoRF = false
 		st.DigipeatWIDE1 = false
 		st.DigipeatWIDE2 = false
+		st.IGateTXPath = "" // no TX, no relay path needed
 		// RX-only disables every existing beacon defensively.
 		for i := range st.Beacons {
 			st.Beacons[i].Enabled = false
@@ -527,6 +615,7 @@ func applyModeDefaults(st *state.State, m state.Mode) {
 		st.GateIStoRF = true
 		st.DigipeatWIDE1 = false
 		st.DigipeatWIDE2 = false
+		st.IGateTXPath = "WIDE1-1" // standard one-hop fill-in path for relayed traffic
 		path = []string{"WIDE2-1"}
 	case state.ModeFillinIG:
 		st.TXEnable = true
@@ -535,6 +624,7 @@ func applyModeDefaults(st *state.State, m state.Mode) {
 		st.DigipeatWIDE1 = true
 		st.DigipeatWIDE2 = false
 		st.ViscousDelay = true // polite fill-in default
+		st.IGateTXPath = "WIDE1-1"
 		path = []string{"WIDE1-1"}
 	case state.ModeDigi:
 		st.TXEnable = true
@@ -545,7 +635,8 @@ func applyModeDefaults(st *state.State, m state.Mode) {
 		st.ViscousDelay = true // even full digis are polite on WIDE1-1
 		st.OfflineMode = false
 		st.MessagingOnlyMode = false
-		path = nil // mountaintop digis beacon direct
+		st.IGateTXPath = "" // pure digi, no IS→RF traffic
+		path = nil          // mountaintop digis beacon direct
 	case state.ModeMessaging:
 		// Selective-gating iGate: bridges person-to-person messages
 		// between RF and APRS-IS but skips position beacons / weather /
@@ -559,6 +650,7 @@ func applyModeDefaults(st *state.State, m state.Mode) {
 		st.ViscousDelay = false
 		st.OfflineMode = false
 		st.MessagingOnlyMode = true
+		st.IGateTXPath = "WIDE1-1"
 		path = []string{"WIDE2-1"}
 	case state.ModeOffline:
 		// Off-grid digi: no APRS-IS at all. Mountaintop hilltop, EMCOMM
@@ -571,7 +663,26 @@ func applyModeDefaults(st *state.State, m state.Mode) {
 		st.ViscousDelay = true
 		st.OfflineMode = true
 		st.MessagingOnlyMode = false
+		st.IGateTXPath = "" // no APRS-IS, no IS→RF relay
 		path = nil
+	case state.ModeIS:
+		// APRS-IS only: no radio, no TNC. Map + messaging + beacons all
+		// go through APRS-IS. Useful for operators without a TNC yet, or
+		// indoor/apartment dwellers who want APRS without a radio. Not an
+		// iGate — we don't relay anyone else's traffic to/from RF.
+		st.TNCKind = state.TNCNone
+		st.TNCSerial = ""
+		st.TNCAddr = ""
+		st.TXEnable = false // no RF TX path
+		st.GateRFtoIS = false
+		st.GateIStoRF = false
+		st.DigipeatWIDE1 = false
+		st.DigipeatWIDE2 = false
+		st.ViscousDelay = false
+		st.OfflineMode = false
+		st.MessagingOnlyMode = false
+		st.IGateTXPath = ""
+		path = nil // beacons emit via IS, no AX.25 path needed
 	case state.ModeAdvanced:
 		// Don't touch any flags — operator manages them directly via
 		// Settings. We just snap the label.

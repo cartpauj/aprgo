@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -37,6 +38,7 @@ const (
 	ModeFillinIG  Mode = "fillin-igate" // digipeat + igate
 	ModeMessaging Mode = "messaging"    // selective gating: messages + acks only
 	ModeOffline   Mode = "offline"      // RF-only digi, no APRS-IS at all
+	ModeIS        Mode = "is"           // APRS-IS only: no TNC/RF — map + messaging + beacons via IS
 	ModeAdvanced  Mode = "advanced"     // operator manages individual flags directly
 )
 
@@ -102,6 +104,17 @@ type State struct {
 	TNCChannel int     `json:"tnc_channel"`  // RFCOMM channel for Bluetooth TNCs; 0 = autodetect (try 1, then SDP)
 	TXEnable   bool    `json:"tx_enable"`    // master switch
 
+	// Advanced KISS TNC parameters. Sent on every TNC connect/reconnect via
+	// the standard KISS command bytes (0x01-0x04) defined in the 1987 KISS
+	// spec. Modern soundmodem/KISS TNCs (Direwolf, Mobilinkd, NinoTNC,
+	// Kenwood TM-D710/TH-D74) honor these; legacy TNC-2 hardware ignores
+	// them silently. All values 0 mean "leave the TNC at its current setting"
+	// (don't emit the command at all).
+	TNCTXDelayMs  int `json:"tnc_tx_delay_ms"`  // ms after PTT before data (default 300; many radios need ≥200)
+	TNCPersist    int `json:"tnc_persist"`      // 0-255 CSMA p-persistence (default 63 ≈ 25% probability)
+	TNCSlotTimeMs int `json:"tnc_slot_time_ms"` // ms between persist samples (default 100)
+	TNCTXTailMs   int `json:"tnc_tx_tail_ms"`   // ms PTT held after data (deprecated; default 0)
+
 	// Operating mode
 	Mode Mode `json:"mode"`
 
@@ -114,11 +127,33 @@ type State struct {
 	// Gating
 	GateRFtoIS    bool `json:"gate_rf_to_is"`
 	GateIStoRF    bool `json:"gate_is_to_rf"`
+	// IGateTXPath is the via-path attached to the outer AX.25 frame on
+	// IS→RF gated traffic. Per aprs-is.net IGateDetails this is operator-
+	// configurable; reference iGates (APRX, Direwolf IGTXVIA, YAAC, PinPoint)
+	// default to "WIDE1-1" — one fill-in hop for typical home iGates.
+	// Empty string = direct only (appropriate for hilltop sites with wide
+	// RF footprint). Validated to max 2 hops.
+	IGateTXPath string `json:"igate_tx_path"`
+
+	// NextMsgID is the next outbound APRS message ID to assign. Monotonic
+	// decimal counter wrapping 1..99999 — matches APRSdroid / YAAC / UI-View32
+	// convention. Persisted so IDs continue across restarts (most clients
+	// dedupe by sender+ID, so reusing an ID right after restart would
+	// confuse them). Bumped+saved on every outbound message.
+	NextMsgID int `json:"next_msg_id"`
 	// Digipeating: split into two independent flags so fill-in and full-digi
 	// roles can be configured separately. Both follow the standard APRS
 	// New-N Paradigm decrement (see internal/gate).
 	DigipeatWIDE1 bool `json:"digipeat_wide1"` // handle WIDE1-1 (fill-in role)
 	DigipeatWIDE2 bool `json:"digipeat_wide2"` // handle WIDE2-N, N≤2 (full-digi role)
+	// RegionalAliases is the operator-configured list of state/regional
+	// flood-alias prefixes the full-digi role should honor (per fix14439).
+	// Each entry is the alias prefix without the n-N suffix, e.g. "ARIZ",
+	// "MASS", "NCN", "SAR". A digi configured for "ARIZ" honors ARIZ1-1
+	// through ARIZ2-2 just like WIDE1-1 / WIDE2-2. Empty list = WIDE-only.
+	// Only honored when DigipeatWIDE2 is true — these are WIDE-class, not
+	// fill-in.
+	RegionalAliases []string `json:"regional_aliases,omitempty"`
 	// ViscousDelay: when handling WIDE1-1 as a fill-in, hold the TX 3–5 s
 	// and cancel if a higher-elevation digi already retransmits the same
 	// content. Standard APRS politeness — on by default.
@@ -143,9 +178,25 @@ type State struct {
 	// Advanced-mode-only; defaults off per Direwolf convention.
 	PreemptiveDigipeat bool `json:"preemptive_digipeat"`
 
+	// IGateRecentRFMinutes: how recently a remote station must have been
+	// heard on RF before aprgo will IS→RF gate a message to them, and
+	// before that station's IS-side traffic shows on the dashboard live
+	// feed. Defaults to 360 (6 hours). Other iGate software typically uses
+	// 30–60 min; longer is forgiving for fixed digipeaters that beacon
+	// infrequently, shorter is safer for mobile stations passing through.
+	// 0 means "use the default" (6 hours).
+	IGateRecentRFMinutes int `json:"igate_recent_rf_minutes,omitempty"`
+
 	// UI / housekeeping
 	Theme             string `json:"theme"`              // auto|light|dark
 	RetentionDays     int    `json:"retention_days"`     // 0 = forever
+	// Timezone is the IANA name (e.g. "America/Denver"). Empty = use the
+	// server's local zone. All stored timestamps are absolute (Unix epoch),
+	// so this is purely a display preference — no migration needed when it
+	// changes.
+	Timezone          string `json:"timezone,omitempty"`
+	// TimeFormat is "12h" or "24h" (default "24h"). Empty defaults to 24h.
+	TimeFormat        string `json:"time_format,omitempty"`
 	AdminPasswordHash string `json:"admin_password_hash"`
 	SessionKey        string `json:"session_key"`        // base64
 
@@ -154,11 +205,22 @@ type State struct {
 }
 
 const (
-	DefaultISServer      = "rotate.aprs2.net:14580"
-	DefaultBeaconDest    = "APRGO"
-	DefaultBeaconEveryS  = 600 // 10 minutes (the APRS community minimum for fixed stations)
-	DefaultRetentionDays = 30
-	DefaultTheme         = "auto"
+	DefaultISServer             = "rotate.aprs2.net:14580"
+	DefaultBeaconDest           = "APRGO"
+	DefaultBeaconEveryS         = 600 // 10 minutes (the APRS community minimum for fixed stations)
+	DefaultRetentionDays        = 3
+	DefaultTheme                = "auto"
+	DefaultTimeFormat           = "24h"
+	DefaultIGateRecentRFMinutes = 30 // APRS-IS IGating.aspx convention
+	DefaultIGateTXPath          = "WIDE1-1"
+
+	// KISS TNC parameter defaults (sent on connect if set in state). 0 means
+	// "don't emit the command" so users can leave any field blank to defer
+	// to the TNC's own default. Recommended starting values for unsure users.
+	DefaultTNCTXDelayMs  = 300 // most modern radios need 200-500ms for clean keyup
+	DefaultTNCPersist    = 63  // ≈25% probability, the KISS spec recommendation
+	DefaultTNCSlotTimeMs = 100 // 100ms between persist samples
+	DefaultTNCTXTailMs   = 0   // deprecated; keep at 0 unless TNC vendor docs say otherwise
 )
 
 // Store wraps the persisted State with an RWMutex and a subscriber list.
@@ -169,6 +231,15 @@ type Store struct {
 	cur             State
 	isDefaultPass   bool // cached; refreshed only on SetPassword + Open
 	passwordChanges uint64 // incremented every SetPassword; used by auth to invalidate sessions
+
+	// msgIDCur / msgIDEnd: in-memory msg-ID block reserved from state.json.
+	// We persist a watermark (`State.NextMsgID`) ahead of in-memory use so a
+	// crash never reuses an ID. NextOutboundMsgID hands out from [cur, end),
+	// reserving a new block from disk only when exhausted — turns the
+	// per-message disk write into ~1 write per `msgIDBlock` outbound messages.
+	msgIDMu  sync.Mutex
+	msgIDCur int
+	msgIDEnd int
 
 	smu  sync.Mutex
 	subs map[chan State]struct{}
@@ -197,6 +268,11 @@ func Open(path string) (*Store, error) {
 			Theme:             DefaultTheme,
 			RetentionDays:     DefaultRetentionDays,
 			ViscousDelay:      true, // polite-fill-in default
+			TNCTXDelayMs:      DefaultTNCTXDelayMs,
+			TNCPersist:        DefaultTNCPersist,
+			TNCSlotTimeMs:     DefaultTNCSlotTimeMs,
+			TNCTXTailMs:       DefaultTNCTXTailMs,
+			IGateTXPath:       DefaultIGateTXPath,
 			AdminPasswordHash: string(hash),
 			SessionKey:        base64.StdEncoding.EncodeToString(keyBytes),
 		}
@@ -226,6 +302,23 @@ func Open(path string) (*Store, error) {
 				changed = true
 			}
 		}
+		if s.cur.IGateTXPath == "" {
+			s.cur.IGateTXPath = DefaultIGateTXPath
+			changed = true
+		}
+		if s.cur.TNCTXDelayMs == 0 {
+			s.cur.TNCTXDelayMs = DefaultTNCTXDelayMs
+			changed = true
+		}
+		if s.cur.TNCPersist == 0 {
+			s.cur.TNCPersist = DefaultTNCPersist
+			changed = true
+		}
+		if s.cur.TNCSlotTimeMs == 0 {
+			s.cur.TNCSlotTimeMs = DefaultTNCSlotTimeMs
+			changed = true
+		}
+		// TNCTXTailMs defaults to 0 (KISS spec deprecates it); don't fill.
 		if changed {
 			_ = s.save()
 		}
@@ -259,6 +352,77 @@ func (s *Store) Update(fn func(*State) error) error {
 	s.mu.Unlock()
 	s.notify(snap)
 	return nil
+}
+
+// msgIDBlock is the reservation chunk size. Saving the state.json on every
+// outbound message thrashes SD-card-backed deploys; instead we reserve a
+// block of IDs ahead, hand them out from RAM, and only re-persist when the
+// block runs out. Worst case after a crash: we skip up to msgIDBlock IDs.
+// That's spec-friendly (peers dedupe on src+ID; an unused ID is harmless)
+// and matches the SQL-sequence "reserve-block" pattern.
+const msgIDBlock = 100
+
+// NextOutboundMsgID hands out the next outbound APRS message ID, wrapping
+// 1..99999. Reserves a new on-disk block of `msgIDBlock` IDs when the
+// in-memory range is exhausted. Skips Update's subscriber notification
+// because the heard list / dashboard don't care about msg-ID changes —
+// notifying would cause an rf+is reconnect on every outbound message.
+//
+// Save errors from the block-reservation are surfaced to the log (previously
+// the error was silently swallowed, which could lead to ID reuse across a
+// disk-full crash). The returned ID is still valid in-memory; downstream
+// peers dedupe by (source, msg_id) so reusing an ID on the *same* sender
+// in rapid succession would be the actual hazard — block reservation
+// prevents that.
+func (s *Store) NextOutboundMsgID() int {
+	s.msgIDMu.Lock()
+	defer s.msgIDMu.Unlock()
+	if s.msgIDCur >= s.msgIDEnd || s.msgIDCur <= 0 || s.msgIDCur > 99999 {
+		s.reserveMsgIDBlock()
+	}
+	n := s.msgIDCur
+	s.msgIDCur++
+	if s.msgIDCur > 99999 {
+		// Wrap mid-block: end of namespace, restart at 1. Force a fresh
+		// disk reservation so the on-disk watermark matches reality.
+		s.msgIDCur = 0
+		s.msgIDEnd = 0
+	}
+	return n
+}
+
+// reserveMsgIDBlock claims the next msgIDBlock IDs on disk and updates
+// the in-memory window. Caller holds s.msgIDMu.
+func (s *Store) reserveMsgIDBlock() {
+	s.mu.Lock()
+	persisted := s.cur.NextMsgID
+	if persisted <= 0 || persisted > 99999 {
+		persisted = 1
+	}
+	// First in-memory ID = the on-disk watermark (a value we know hasn't
+	// been handed out yet on any prior boot — see Open() initialization).
+	s.msgIDCur = persisted
+	// Advance the on-disk watermark by msgIDBlock, wrapping at the 99999
+	// ceiling. Block-end is min(start+block, 100000) so we never hand out
+	// 100000 itself — that wraps to 1 on the next reservation.
+	end := persisted + msgIDBlock
+	if end > 100000 {
+		end = 100000
+	}
+	s.msgIDEnd = end
+	if end >= 100000 {
+		s.cur.NextMsgID = 1
+	} else {
+		s.cur.NextMsgID = end
+	}
+	err := s.save()
+	s.mu.Unlock()
+	if err != nil {
+		// Don't drop the IDs (we already committed in-memory) but log so
+		// operators see persistent disk problems. Next reservation will
+		// retry the save.
+		log.Printf("state: msg-ID block save failed: %v (counter advanced in-memory only)", err)
+	}
 }
 
 // Subscribe returns a channel that receives a snapshot after every Update.
@@ -399,7 +563,25 @@ func (b Beacon) ComposeInfo(lat, lon float64) string {
 	latS := fmt.Sprintf("%02d%05.2f%s", latDeg, latMin, latH)
 	lonS := fmt.Sprintf("%03d%05.2f%s", lonDeg, lonMin, lonH)
 	latS, lonS = applyAmbiguity(latS, lonS, b.AmbiguityLevel)
-	return fmt.Sprintf("%s%s%c%s%c%s", posType, latS, sym[0], lonS, sym[1], b.Comment)
+	return fmt.Sprintf("%s%s%c%s%c%s", posType, latS, sym[0], lonS, sym[1], sanitizeBeaconComment(b.Comment))
+}
+
+// sanitizeBeaconComment is a defensive last-line filter against malformed
+// state.json edits: strip control chars + APRS-reserved `|`/`~`, cap at 43
+// bytes (APRS101 §8). The UI sanitize layer normally catches all of this.
+func sanitizeBeaconComment(s string) string {
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x20 || c == 0x7F || c == '|' || c == '~' {
+			continue
+		}
+		out = append(out, c)
+	}
+	if len(out) > 43 {
+		out = out[:43]
+	}
+	return string(out)
 }
 
 // applyAmbiguity blanks trailing digits of the encoded lat/lon strings
