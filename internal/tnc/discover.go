@@ -94,6 +94,9 @@ func Paired(ctx context.Context) ([]BTDevice, error) {
 // Scan runs a discoverable scan for `duration` and returns the devices found.
 // Re-runs bluetoothctl in non-interactive mode.
 func Scan(ctx context.Context, duration time.Duration) ([]BTDevice, error) {
+	if err := EnsureBTReady(ctx); err != nil {
+		return nil, err
+	}
 	if duration <= 0 {
 		duration = 8 * time.Second
 	}
@@ -110,6 +113,50 @@ func Scan(ctx context.Context, duration time.Duration) ([]BTDevice, error) {
 	return parseDeviceList(out), nil
 }
 
+// EnsureBTReady makes sure the Bluetooth adapter is ready for scan/pair:
+//   - Unblocks the controller if it's rfkill-soft-blocked (we run as root,
+//     and the operator can't always run rfkill themselves).
+//   - Powers on the controller via bluetoothctl if it's off.
+//
+// Returns a clear, actionable error if the adapter is hard-blocked (physical
+// switch — software can't override), if no controller exists at all (no BT
+// hardware / driver hasn't bound), or if the bluetooth service isn't
+// available. Safe to call repeatedly; cheap when already ready.
+func EnsureBTReady(ctx context.Context) error {
+	// 1. rfkill: distinguish soft vs hard block. We don't fail outright if
+	//    rfkill isn't installed — bluetoothctl power on may still work.
+	if _, err := exec.LookPath("rfkill"); err == nil {
+		out, _ := run(ctx, 3*time.Second, "rfkill", "list", "bluetooth")
+		// rfkill output for each entry:
+		//   0: hci0: Bluetooth
+		//   	Soft blocked: yes
+		//   	Hard blocked: no
+		if strings.Contains(out, "Hard blocked: yes") {
+			return errors.New("bluetooth is hard-blocked by a physical switch or firmware setting — flip the device's Bluetooth/airplane switch on, then retry")
+		}
+		if strings.Contains(out, "Soft blocked: yes") {
+			if _, err := run(ctx, 3*time.Second, "rfkill", "unblock", "bluetooth"); err != nil {
+				return fmt.Errorf("bluetooth is soft-blocked and aprgo couldn't unblock it (rfkill unblock failed: %w) — try `sudo rfkill unblock bluetooth` and retry", err)
+			}
+		}
+	}
+
+	// 2. bluetoothctl power on. If there's no controller at all, this fails
+	//    with "No default controller available" — surface that as a clear
+	//    hardware/driver error rather than a generic exec failure.
+	if _, err := exec.LookPath("bluetoothctl"); err != nil {
+		return errors.New("bluetoothctl not found in PATH — install the bluez package so aprgo can manage the BT adapter")
+	}
+	out, err := run(ctx, 3*time.Second, "bluetoothctl", "power", "on")
+	if err != nil {
+		if strings.Contains(out, "No default controller") {
+			return errors.New("no Bluetooth controller found — check `dmesg | grep -i bluetooth` for driver errors; on a Pi the firmware in /lib/firmware/brcm/ may be missing or the UART for hci0 hasn't attached")
+		}
+		return fmt.Errorf("bluetoothctl power on: %w: %s", err, strings.TrimSpace(out))
+	}
+	return nil
+}
+
 // Pair attempts to pair + trust a Bluetooth device. Relies on Just-Works
 // pairing (no PIN/passkey — almost all APRS TNCs work this way).
 //
@@ -124,6 +171,9 @@ func Scan(ctx context.Context, duration time.Duration) ([]BTDevice, error) {
 func Pair(ctx context.Context, addr string) error {
 	if !btAddrRE.MatchString(addr) {
 		return fmt.Errorf("bad bluetooth address %q", addr)
+	}
+	if err := EnsureBTReady(ctx); err != nil {
+		return err
 	}
 	// If already paired, BlueZ rejects re-pair attempts. Just (re)trust.
 	if info, err := run(ctx, 3*time.Second, "bluetoothctl", "info", addr); err == nil {

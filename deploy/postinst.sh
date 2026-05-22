@@ -77,14 +77,18 @@ if [ -n "$banner_head" ]; then
     echo
     echo "  ${banner_head}"
     echo
-    echo "  Web console — aprgo listens on two ports:"
+    echo "  Open the web console (recommended):"
     echo
-    echo "    HTTP  (http://${IP}:14473/) — read-only browsing of Dashboard,"
-    echo "          Map, Stations, Stats, Logs, plus the first-run setup wizard."
-    echo "          Settings, Messages, Bulletins will redirect to HTTPS."
+    echo "    https://${IP}:14439/"
+    echo "       Full access. The TLS cert is self-signed, so your browser"
+    echo "       will warn once — click through to continue."
     echo
-    echo "    HTTPS (https://${IP}:14439/) — full access. The cert is self-signed,"
-    echo "          so your browser will warn once — click through to continue."
+    echo "  Restricted fallback if you can't reach HTTPS (e.g. browser blocks"
+    echo "  the self-signed cert, or you're on a network that strips TLS):"
+    echo
+    echo "    http://${IP}:14473/"
+    echo "       Read-only views only — Dashboard, Map, Stations, Stats, Logs."
+    echo "       Settings, Messages, and Bulletins redirect to HTTPS."
     echo
     if [ "$is_install" = "1" ]; then
         echo "  Default login:   admin / admin   (change on first sign-in)"

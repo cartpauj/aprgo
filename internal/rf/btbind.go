@@ -167,6 +167,29 @@ func (b *btSupervisor) supervise(ctx context.Context, addr, dev string, channel 
 	disableBTSniff(ctx)
 	backoff := time.Second
 	for ctx.Err() == nil {
+		// Make sure the BT controller is unblocked and powered before each
+		// attempt. A reboot, an `rfkill block` from another tool, or the
+		// kernel suspending the radio over WiFi/BT coex can flip the
+		// adapter off underneath us; without this, `rfcomm connect` would
+		// just fail in a tight retry loop forever. Failure here is logged
+		// but doesn't stop the retry — Hard-blocked / no-controller errors
+		// surface in the log and the backoff still applies.
+		readyCtx, readyCancel := context.WithTimeout(ctx, 5*time.Second)
+		if err := tnc.EnsureBTReady(readyCtx); err != nil {
+			log.Printf("rf: bt adapter not ready: %v (retry in %s)", err, backoff)
+			readyCancel()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < 15*time.Second {
+				backoff *= 2
+			}
+			continue
+		}
+		readyCancel()
+
 		// Release any stale binding first (idempotent — failure is fine).
 		releaseCtx, releaseCancel := context.WithTimeout(ctx, 3*time.Second)
 		_ = exec.CommandContext(releaseCtx, "rfcomm", "release", idx).Run()

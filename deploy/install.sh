@@ -40,6 +40,12 @@ IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 [[ -z "$IP" ]] && IP="localhost"
 echo
 echo "  aprgo installed and started."
-echo "  Open:            https://${IP}:14439/  (accept the self-signed cert warning once)"
-echo "  Default login:   admin / admin  (change immediately on first run)"
+echo
+echo "  Open the web console (recommended):"
+echo "    https://${IP}:14439/   (accept the self-signed cert warning once — full access)"
+echo
+echo "  Restricted fallback if you can't reach HTTPS:"
+echo "    http://${IP}:14473/    (read-only — Settings/Messages/Bulletins redirect to HTTPS)"
+echo
+echo "  Default login:   admin / admin   (change immediately on first sign-in)"
 echo "  Logs:            journalctl -u aprgo -f"

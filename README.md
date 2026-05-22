@@ -36,12 +36,12 @@ aprgo targets Linux with systemd. macOS, Windows, and the BSDs aren't supported:
 
 ### Reaching the console
 
-After `sudo systemctl start aprgo`:
+aprgo auto-starts on install. The web console is **HTTPS by default** — start at `https://<host>:14439/` and click through the self-signed cert warning once. Plain HTTP on 14473 is a restricted fallback for hosts where TLS isn't usable (e.g. a browser that refuses self-signed certs, or a captive network that strips TLS).
 
 | Port | URL | Use |
 |---|---|---|
-| **14473** (HTTP) | `http://<host>:14473/` | Read-only browsing (Dashboard, Map, Stations, Stats, Logs) and the first-run setup wizard |
-| **14439** (HTTPS) | `https://<host>:14439/` | Full access. Self-signed cert; accept the browser warning once |
+| **14439** (HTTPS) | `https://<host>:14439/` | **Recommended.** Full access. Self-signed cert; accept the browser warning once. |
+| **14473** (HTTP)  | `http://<host>:14473/`  | Restricted fallback. Read-only views (Dashboard, Map, Stations, Stats, Logs) and the first-run setup wizard. Settings, Messages, and Bulletins redirect to HTTPS. |
 
 Default login is `admin` / `admin`. Change it on first sign-in.
 
