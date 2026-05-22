@@ -10,7 +10,13 @@ Type=simple
 # require root. The hardening directives below mitigate elevated privilege.
 User=root
 Group=root
-ExecStart=/usr/local/bin/aprgo -listen 0.0.0.0:14439 -state /var/lib/aprgo/state.json -db /var/lib/aprgo/db.sqlite
+ExecStart=/usr/local/bin/aprgo \
+    -listen-http 0.0.0.0:14473 \
+    -listen-https 0.0.0.0:14439 \
+    -state /var/lib/aprgo/state.json \
+    -config /var/lib/aprgo/aprgo.conf \
+    -db /var/lib/aprgo/db.sqlite \
+    -tls-dir /var/lib/aprgo/tls
 Restart=always
 RestartSec=3
 StartLimitIntervalSec=60

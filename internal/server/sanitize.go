@@ -226,11 +226,11 @@ func validateNext(next string) string {
 
 // CSRF: synchronizer-token pattern bound to session cookie value via HMAC.
 // Token is the base64(HMAC-SHA256(sessionKey, cookieValue)). The server signs
-// with state.SessionKey so the token is unforgeable without that key.
+// with config.SessionKey so the token is unforgeable without that key.
 
 // csrfTokenFor returns the canonical token for the given session cookie value.
 func (s *Server) csrfTokenFor(cookieValue string) string {
-	m := hmac.New(sha256.New, s.state.SessionKey())
+	m := hmac.New(sha256.New, s.config.SessionKey())
 	_, _ = m.Write([]byte("csrf:" + cookieValue))
 	return base64.RawURLEncoding.EncodeToString(m.Sum(nil))
 }

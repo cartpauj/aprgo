@@ -196,7 +196,7 @@
       '<div class="beacon-head">' +
         '<label class="beacon-head-name-label">Name' +
           '<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Local identifier only — not transmitted on air. The over-the-air packet identifies your station by Callsign-SSID, Symbol, and Comment. The name is used internally to track scheduling (last-fired time), as the key for "Fire now" actions, and in logs.</span></span>' +
-          '<input type="text" class="beacon-head-name" name="beacon_' + i + '_name" value="beacon' + i + '" size="16" maxlength="32" pattern="[A-Za-z0-9_-]+" required title="Letters, digits, dash, underscore; must be unique">' +
+          '<input type="text" class="beacon-head-name" name="beacon_' + i + '_name" value="beacon' + i + '" size="16" maxlength="32" required title="Local label; must be unique among your beacons">' +
         '</label>' +
         '<div class="beacon-head-actions">' +
           '<label class="cb"><input type="checkbox" name="beacon_' + i + '_enabled" value="1" checked> Enabled</label>' +
@@ -397,4 +397,29 @@
       cb.checked = false;
     }
   });
+})();
+
+// Lockdown "Lock everything" cascade: when checked, hide the granular
+// sub-flag checkboxes (their state is preserved in the DOM so unchecking
+// restores the subset the operator had). Server stores raw flags
+// regardless and fans LockAll out at read time via Lockdown.Effective().
+//
+// Sub-flags live alongside lock_all in the same .flags-grid (2×2
+// layout). They're marked with class .lockdown-sub so this script can
+// hide them individually without touching the layout container itself.
+// We set style.display directly instead of using the [hidden] attribute
+// because .flags-grid carries `display: grid` in style.css — author CSS
+// beats the UA stylesheet's [hidden] { display: none }, so the attribute
+// alone has no visual effect.
+(function () {
+  var all = document.getElementById("lock-all-cb");
+  if (!all) return;
+  var subs = document.querySelectorAll(".lockdown-sub");
+  function sync() {
+    for (var i = 0; i < subs.length; i++) {
+      subs[i].style.display = all.checked ? "none" : "";
+    }
+  }
+  all.addEventListener("change", sync);
+  sync();
 })();

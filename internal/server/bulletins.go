@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"aprgo/internal/config"
 	"aprgo/internal/state"
 	"aprgo/internal/store"
 )
@@ -109,6 +110,9 @@ func (s *Server) handleBulletinSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.requireCSRF(w, r) {
+		return
+	}
+	if !s.requireUnlocked(w, func(l config.Lockdown) bool { return l.DisableBulletins }, "bulletins") {
 		return
 	}
 	snap := s.state.Snapshot()

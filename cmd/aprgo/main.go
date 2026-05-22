@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"aprgo/internal/config"
 	"aprgo/internal/igate"
 	"aprgo/internal/server"
 )
@@ -21,14 +22,40 @@ import (
 var Version = "1.0.0"
 
 func main() {
-	listen := flag.String("listen", ":14439", "HTTP listen address")
+	// Default ports: 14473 (HTTP) is a digit-shuffle of 14439 that ends in
+	// 443, the universal HTTPS hint — it's the "redirect to TLS" port.
+	// 14439 (HTTPS) is the play on 144.390 MHz, the North-American APRS
+	// calling frequency — the operator-facing console lives here.
+	listenHTTP := flag.String("listen-http", ":14473", "HTTP listen address (redirects to HTTPS for everything except healthz/readyz)")
+	listenHTTPS := flag.String("listen-https", ":14439", "HTTPS listen address (self-signed cert)")
 	statePath := flag.String("state", "/var/lib/aprgo/state.json", "Path to state JSON file")
+	configPath := flag.String("config", "/var/lib/aprgo/aprgo.conf", "Path to config file (credentials + lockdown)")
 	dbPath := flag.String("db", "/var/lib/aprgo/db.sqlite", "Path to SQLite database")
+	tlsDir := flag.String("tls-dir", "/var/lib/aprgo/tls", "Directory holding the self-signed cert+key")
+	regenTLS := flag.Bool("regen-tls", false, "Wipe and regenerate the self-signed cert on startup")
+	setPassword := flag.String("set-password", "", "Set the admin password directly in aprgo.conf and exit. Use to recover from a UI lockout — restart aprgo afterwards. Tip: prefix the command with a space so it doesn't land in shell history.")
 	showVer := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 
 	if *showVer {
 		fmt.Println("aprgo", Version)
+		return
+	}
+
+	if *setPassword != "" {
+		cfg, err := config.Open(*configPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "config:", err)
+			os.Exit(1)
+		}
+		if err := cfg.SetPassword(*setPassword); err != nil {
+			fmt.Fprintln(os.Stderr, "set password:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("password updated in %s\n", *configPath)
+		fmt.Println()
+		fmt.Println("Now restart aprgo for the change to take effect:")
+		fmt.Println("    sudo systemctl restart aprgo")
 		return
 	}
 
@@ -46,13 +73,18 @@ func main() {
 	log.SetOutput(logBuf.Tee(os.Stderr))
 	igate.SetVersion(Version)
 	server.SetVersion(Version)
-	log.Printf("aprgo %s starting (listen=%s state=%s db=%s)", Version, *listen, *statePath, *dbPath)
+	log.Printf("aprgo %s starting (http=%s https=%s state=%s config=%s db=%s)",
+		Version, *listenHTTP, *listenHTTPS, *statePath, *configPath, *dbPath)
 
 	srv, err := server.New(server.Options{
-		Listen:    *listen,
-		StatePath: *statePath,
-		DBPath:    *dbPath,
-		LogBuffer: logBuf,
+		ListenHTTP:  *listenHTTP,
+		ListenHTTPS: *listenHTTPS,
+		StatePath:   *statePath,
+		ConfigPath:  *configPath,
+		DBPath:      *dbPath,
+		TLSDir:      *tlsDir,
+		RegenTLS:    *regenTLS,
+		LogBuffer:   logBuf,
 	})
 	if err != nil {
 		log.Fatalf("server init: %v", err)

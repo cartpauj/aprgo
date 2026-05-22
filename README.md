@@ -28,7 +28,11 @@ sudo ./deploy/install.sh ./aprgo
 sudo systemctl start aprgo
 
 # 3. Open the console
-# http://<host>:14439/    user: admin   pass: admin  (change immediately)
+# http://<host>:14473/    user: admin   pass: admin  (change immediately)
+#
+# After first-run setup completes, aprgo redirects all non-loopback HTTP to
+# https://<host>:14439/ — the operator console is HTTPS-only post-setup.
+# The cert is self-signed; your browser will warn once. Click through.
 ```
 
 Cross-compile for Raspberry Pi (arm64):
@@ -102,17 +106,97 @@ Once setup is done, the navigation has these pages:
 
 ## Security model
 
+aprgo serves the console over **HTTPS by default** with a self-signed cert generated on first start. It listens on two ports:
+
+| Port | Scheme | Purpose |
+|---|---|---|
+| **14473** | HTTP | Redirects everything to HTTPS once setup is complete. `/healthz` and `/readyz` stay plain so monitors don't need TLS. |
+| **14439** | HTTPS | The operator console. Self-signed cert — your browser warns once, then remembers. |
+
+The two ports double as a `144.39 MHz` reference (HTTPS) and the `:443`-flavoured HTTP redirect port (`14473`).
+
+**First-run carve-out.** Until the setup wizard completes, the HTTP port stays fully open so a new operator can finish onboarding without first wrestling with a cert warning. The moment the wizard's "Done" step commits, the transport gate engages and non-loopback HTTP starts redirecting.
+
+**Operator credentials + lockdown** live in `/var/lib/aprgo/aprgo.conf` (mode 0600). Settings → Account is the UI that writes that file: username (`[a-z0-9_-]`), bcrypt password, session HMAC key, and a set of hardening checkboxes. Once you enable a lockdown flag, the corresponding handler returns 403 — and the *only* way to undo it is to edit `aprgo.conf` on the box and restart aprgo. That's the deliberate recovery path; there is no web-side override, because that would defeat the threat model.
+
+Hardening checkboxes:
+
+- **Lock settings** — Settings page (and the wizard) become read-only.
+- **Disable messaging** — Send / cancel / retry message handlers refuse.
+- **Disable bulletins** — Bulletin compose, send, and subscription-edit handlers all refuse.
+- **Lock everything** — Master view-only mode (implies all of the above).
+
+Other invariants:
+
 - aprgo runs as `root` (required for `rfcomm` + `bluetoothctl`) with systemd hardening (`ProtectSystem=strict`, `NoNewPrivileges`, `LockPersonality`, `MemoryDenyWriteExecute`, restricted address families and capabilities).
-- APRS-IS passcode is stored plaintext in `/var/lib/aprgo/state.json` (mode 0600). This is a protocol limitation — the IS server needs the cleartext value.
+- APRS-IS passcode is stored plaintext in `/var/lib/aprgo/state.json` (mode 0600). Protocol limitation — the IS server needs the cleartext value.
 - Default web login is `admin` / `admin`. **Change it immediately on first login** — the dashboard banner reminds you.
 - Web UI has CSRF (token + Origin check + `SameSite=Strict`), session HMAC, per-IP login rate limiting, and password-change session invalidation.
-- HTTP is plaintext by default. Put aprgo behind a reverse proxy (nginx, Caddy, Traefik) for TLS if exposed beyond a trusted LAN.
+- Self-signed TLS protects the LAN segment from passive sniffing. **It does not protect against a determined attacker on the path** — there's no chain of trust. For public-internet exposure, run aprgo behind Caddy / nginx with a real cert, or front it with Tailscale (which issues `*.ts.net` certs for free).
+
+### Regenerating the cert
+
+If you move the box to a new hostname, restart with `--regen-tls`:
+
+```bash
+sudo /usr/local/bin/aprgo --regen-tls   # one-shot regen, then restart normally
+```
+
+Or just remove `/var/lib/aprgo/tls/` and restart — aprgo regenerates on the next boot. The fingerprint is logged on every start so you can verify it out-of-band over SSH.
+
+### The config file: `/var/lib/aprgo/aprgo.conf`
+
+JSON, mode `0600`, owned root. Created on first start with default `admin/admin` + a fresh random session key. Every field:
+
+```json
+{
+  "username":      "admin",
+  "password_hash": "$2a$10$…",
+  "session_key":   "<base64>",
+  "lockdown": {
+    "lock_settings":     false,
+    "disable_messaging": false,
+    "disable_bulletins": false,
+    "lock_all":          false
+  }
+}
+```
+
+| Field | What it is | How to change it from the CLI |
+|---|---|---|
+| `username` | The single admin account name. `[a-z0-9_-]{1,32}`. | Edit the string. |
+| `password_hash` | bcrypt hash of the password. | `sudo aprgo --set-password 'your-new-password'` writes the hash directly into `aprgo.conf`. Restart aprgo afterwards. |
+| `session_key` | 32-byte HMAC key, base64-encoded. Signs session cookies and CSRF tokens. **Don't share this** — anyone who has it can forge sessions. To rotate after a suspected compromise, **blank the field** (`"session_key": ""`) and restart aprgo — a fresh key is minted and persisted automatically. Every existing session is invalidated. |
+| `lockdown.*` | The UI hardening flags. Flip any to `true` to enable, back to `false` to undo. Restart aprgo for the change to take effect. |
+
+### Recovering from a lockout
+
+```bash
+sudo systemctl stop aprgo
+sudo nano /var/lib/aprgo/aprgo.conf        # flip "lockdown" flags to false
+sudo systemctl start aprgo
+```
+
+If you've also forgotten the password:
+
+```bash
+sudo systemctl stop aprgo
+# Single quotes so the shell doesn't interpret special characters.
+# Prefix the command with a space if HISTCONTROL=ignorespace is set on
+# your shell, otherwise the new password lands in shell history.
+ sudo aprgo --set-password 'your-new-password'
+sudo systemctl start aprgo
+```
+
+`--set-password` writes the new bcrypt hash directly into `aprgo.conf` and exits — no manual JSON editing required.
 
 ## Files
 
 - `/usr/local/bin/aprgo` — the binary
 - `/etc/systemd/system/aprgo.service` — service unit
-- `/var/lib/aprgo/state.json` — config (callsign, passcode, location, beacon text, gating flags, password hash, session key)
+- `/var/lib/aprgo/state.json` — operating config (callsign, passcode, location, beacon text, gating flags)
+- `/var/lib/aprgo/aprgo.conf` — credentials + lockdown flags (mode 0600). Edit this to recover from a UI lockout.
+- `/var/lib/aprgo/tls/{cert.pem,key.pem}` — self-signed TLS material (key mode 0600)
 - `/var/lib/aprgo/db.sqlite[-wal,-shm]` — SQLite store (heard stations, packets, messages)
 
 ## Day-2 operations
@@ -130,7 +214,9 @@ journalctl -u aprgo --since '1 hour ago'
 ```bash
 sudo systemctl stop aprgo
 sudo cp /var/lib/aprgo/state.json     ~/aprgo-state-$(date +%F).json
+sudo cp /var/lib/aprgo/aprgo.conf     ~/aprgo-conf-$(date +%F).conf
 sudo cp /var/lib/aprgo/db.sqlite      ~/aprgo-db-$(date +%F).sqlite
+sudo cp -a /var/lib/aprgo/tls         ~/aprgo-tls-$(date +%F)
 sudo systemctl start aprgo
 ```
 

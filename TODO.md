@@ -1,31 +1,29 @@
 # TODO
 
-## Security / Lockdown via Config File
+## ✅ Security / Lockdown via Config File — DONE (2026-05-22)
 
-Add a config file (e.g. `aprgo.conf` or `~/.aprgo/config.yaml`) for security-sensitive
-settings that should NOT be editable from the web UI (OTA). The goal: a remote/public
-server can be locked down so a compromised web session cannot be used to spam APRS-IS
-or change credentials.
-
-Config-file-only settings (not editable in web UI):
-
-- **Web UI username / password** — credentials live in the config file. Optional toggle
-  to allow editing them OTA (default: off for remote servers).
-- **Disable settings page OTA entirely** — read-only settings view; all changes must be
-  made by editing the config file on disk.
-- **Lockdown flags** for individual OTA capabilities:
-  - `lockdown.messaging` — disable sending APRS messages from the web UI
-  - `lockdown.bulletins` — disable sending/editing bulletins from the web UI
-  - `lockdown.settings` — disable all settings edits from the web UI
-  - `lockdown.all` — view-only mode: everything is read-only, no sending, no edits
-- **Require login for everything** — option to gate the entire web UI (including stats /
-  diagnostics / map) behind login, not just the settings/messaging pages.
-
-Implementation notes:
-- Config file should be loaded at startup; OTA settings UI should reflect which fields
-  are locked (grey out + tooltip "locked by config file").
-- Changing a locked field via the API should return 403, not just hide it in the UI.
-- Document a "remote server hardening" preset in the README.
+Shipped:
+- New `internal/config` package owning `/var/lib/aprgo/aprgo.conf` (username,
+  bcrypt password hash, session HMAC key, lockdown flags). Atomic write,
+  mode 0600.
+- Configurable admin username (`[a-z0-9_-]{1,32}`); the old hardcoded
+  "admin" constant is gone.
+- New `internal/tlscert` package — self-signed ECDSA P-256 cert
+  generated on first run at `/var/lib/aprgo/tls/`, fingerprint logged.
+- Dual listeners: HTTP on `:14473` (read pages + redirect for critical
+  paths), HTTPS on `:14439`. Loopback bypasses both gates; first-run
+  bypasses until `SetupComplete=true`.
+- Hardening checkboxes in Settings → Account: lock_settings,
+  disable_messaging, disable_bulletins, lock_all. One-way ratchet —
+  once on, the checkbox disappears from UI and the only undo is
+  editing `aprgo.conf` and restarting. UI surfaces (compose forms,
+  cancel/retry buttons) hide when the matching flag is on; server
+  handlers return 403 too.
+- `aprgo --set-password 'newpass'` writes a bcrypt hash directly into
+  `aprgo.conf` and prints the restart command. Recovery from lockout
+  is a two-command shell flow.
+- Session-key rotation: blank the field in `aprgo.conf` and restart;
+  aprgo mints a fresh 32-byte key on load.
 
 ## Notifications
 

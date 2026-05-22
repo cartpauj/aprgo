@@ -52,6 +52,15 @@
         {{template "msgThread" .}}
       </div>
 
+      {{if .Lockdown.DisableMessaging}}
+      <div class="chat-composer chat-composer-locked">
+        <div class="flash err">
+          Messaging is locked by aprgo.conf — send / cancel / retry are
+          disabled. Edit <code>/var/lib/aprgo/aprgo.conf</code> on the
+          server and restart aprgo to undo.
+        </div>
+      </div>
+      {{else}}
       <form class="chat-composer"
             hx-post="/messages/send"
             hx-target="#composer-flash"
@@ -75,6 +84,7 @@
           <div class="chat-charcount mono">67 max</div>
         </div>
       </form>
+      {{end}}
     {{else}}
       <div class="chat-empty-pane">
         <div class="chat-empty-mark">
@@ -131,22 +141,28 @@
         {{else}}
           <span class="chat-pending" title="Retrying — attempt {{.Attempts}} of 5">↻ retry {{.Attempts}}/5</span>
         {{end}}
+        {{if not $.Lockdown.DisableMessaging}}
         <button type="button" class="chat-action cancel" title="Cancel retries"
                 hx-post="/messages/cancel/{{.ID}}"
                 hx-headers='{"X-CSRF-Token": "{{$.CSRFToken}}"}'
                 hx-swap="none">× cancel</button>
+        {{end}}
       {{else if eq .State "failed"}}
         <span class="chat-failed" title="No ack after 5 attempts">✗ no ack</span>
+        {{if not $.Lockdown.DisableMessaging}}
         <button type="button" class="chat-action retry" title="Send again"
                 hx-post="/messages/retry/{{.ID}}"
                 hx-headers='{"X-CSRF-Token": "{{$.CSRFToken}}"}'
                 hx-swap="none">↻ retry</button>
+        {{end}}
       {{else if eq .State "cancelled"}}
         <span class="chat-cancelled" title="Cancelled by you">✗ cancelled</span>
+        {{if not $.Lockdown.DisableMessaging}}
         <button type="button" class="chat-action retry" title="Send again"
                 hx-post="/messages/retry/{{.ID}}"
                 hx-headers='{"X-CSRF-Token": "{{$.CSRFToken}}"}'
                 hx-swap="none">↻ retry</button>
+        {{end}}
       {{end}}
     {{end}}
   </div>

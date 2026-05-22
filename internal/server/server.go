@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"crypto/sha1"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"html/template"
@@ -22,19 +23,25 @@ import (
 	"aprgo/internal/ax25"
 	"aprgo/internal/beacon"
 	"aprgo/internal/bus"
+	"aprgo/internal/config"
 	"aprgo/internal/gate"
 	"aprgo/internal/igate"
 	"aprgo/internal/rf"
 	"aprgo/internal/state"
 	"aprgo/internal/store"
+	"aprgo/internal/tlscert"
 	"aprgo/web"
 )
 
 // Options configures the server.
 type Options struct {
-	Listen    string
-	StatePath string
-	DBPath    string
+	ListenHTTP  string
+	ListenHTTPS string
+	StatePath   string
+	ConfigPath  string
+	DBPath      string
+	TLSDir      string
+	RegenTLS    bool
 	// LogBuffer is the in-memory ring of recent log lines surfaced on
 	// the diagnostics page. nil = no log panel rendered.
 	LogBuffer *LogBuffer
@@ -44,6 +51,7 @@ type Options struct {
 type Server struct {
 	opts   Options
 	state  *state.Store
+	config *config.Store
 	auth   *auth.Authenticator
 	bus    *bus.Bus
 	store  *store.Store
@@ -174,6 +182,10 @@ func New(opts Options) (*Server, error) {
 	})
 	log.Printf("static: loaded %d assets", len(staticMap))
 
+	cfg, err := config.Open(opts.ConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
 	st, err := state.Open(opts.StatePath)
 	if err != nil {
 		return nil, fmt.Errorf("state: %w", err)
@@ -186,7 +198,8 @@ func New(opts Options) (*Server, error) {
 	s := &Server{
 		opts:    opts,
 		state:   st,
-		auth:    auth.New(st),
+		config:  cfg,
+		auth:    auth.New(cfg),
 		bus:     b,
 		store:   db,
 		rf:      rf.New(st, b),
@@ -289,34 +302,86 @@ func (s *Server) Run(ctx context.Context) error {
 	spawn("pairsJanitor", s.pairsJanitor)
 	spawn("msgRetries", s.runRetryWorker)
 
-	srv := &http.Server{
-		Addr:              s.opts.Listen,
-		Handler:           s.routes(),
+	// Load (or generate) the self-signed TLS cert. On failure, refuse to
+	// start — running HTTP-only would let credentials cross the LAN in
+	// the clear, which is exactly what the transport gate is supposed to
+	// prevent.
+	var cert tls.Certificate
+	if s.opts.RegenTLS {
+		c, fp, err := tlscert.Regenerate(s.opts.TLSDir)
+		if err != nil {
+			return fmt.Errorf("regen tls: %w", err)
+		}
+		log.Printf("tls: regenerated self-signed cert sha256=%s", fp)
+		cert = c
+	} else {
+		c, fp, err := tlscert.LoadOrGenerate(s.opts.TLSDir)
+		if err != nil {
+			return fmt.Errorf("tls cert: %w", err)
+		}
+		log.Printf("tls: loaded self-signed cert sha256=%s", fp)
+		cert = c
+	}
+
+	handler := s.routes()
+	srvHTTP := &http.Server{
+		Addr:              s.opts.ListenHTTP,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-	errc := make(chan error, 1)
+	srvHTTPS := &http.Server{
+		Addr:              s.opts.ListenHTTPS,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		},
+	}
+
+	errc := make(chan error, 2)
 	go func() {
-		log.Printf("listening on %s", s.opts.Listen)
-		errc <- srv.ListenAndServe()
+		log.Printf("listening (http) on %s", s.opts.ListenHTTP)
+		err := srvHTTP.ListenAndServe()
+		if err != nil && err != http.ErrServerClosed {
+			errc <- fmt.Errorf("http: %w", err)
+		}
+	}()
+	go func() {
+		log.Printf("listening (https) on %s", s.opts.ListenHTTPS)
+		// Cert + key are already loaded into TLSConfig — empty paths are
+		// fine; ListenAndServeTLS only reads them if TLSConfig has no
+		// certs.
+		err := srvHTTPS.ListenAndServeTLS("", "")
+		if err != nil && err != http.ErrServerClosed {
+			errc <- fmt.Errorf("https: %w", err)
+		}
 	}()
 	select {
 	case err := <-errc:
-		if err != http.ErrServerClosed {
-			// Drain background goroutines before returning.
-			<-ctx.Done()
-			s.viscous.Stop()
-			wg.Wait()
-			_ = s.store.Close()
-			return err
-		}
+		// One listener died — drain background goroutines and bail. The
+		// other listener will be torn down when ctx cancels via the
+		// defer-shutdown path below.
+		<-ctx.Done()
+		s.viscous.Stop()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srvHTTP.Shutdown(shutCtx)
+		_ = srvHTTPS.Shutdown(shutCtx)
+		wg.Wait()
+		_ = s.store.Close()
+		return err
 	case <-ctx.Done():
 		log.Printf("shutdown: signal received, draining…")
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = srv.Shutdown(shutCtx)
-		log.Printf("shutdown: http server stopped, waiting for goroutines…")
+		_ = srvHTTP.Shutdown(shutCtx)
+		_ = srvHTTPS.Shutdown(shutCtx)
+		log.Printf("shutdown: http servers stopped, waiting for goroutines…")
 	}
 	// Stop pending fill-in-digi timers so they don't fire against a
 	// torn-down RF subsystem during the wg.Wait() window below.
@@ -955,7 +1020,12 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", a.ct)
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	// no-cache forces the browser to revalidate every request via
+	// If-None-Match. Unchanged assets return 304 (no body), so the cost
+	// is one round-trip per asset per session — much cheaper than the
+	// confusion of an hour-old cached JS or CSS file. ETag does the
+	// actual freshness check.
+	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("ETag", a.etag)
 	if match := r.Header.Get("If-None-Match"); match == a.etag {
 		w.WriteHeader(http.StatusNotModified)
@@ -1001,7 +1071,15 @@ func (s *Server) common(title string, r *http.Request) map[string]any {
 	data := map[string]any{
 		"Title":            title,
 		"Authed":           true,
-		"DefaultPassword":  s.state.IsDefaultPassword(),
+		"DefaultPassword":  s.config.IsDefaultPassword(),
+		"AdminUsername":    s.config.Username(),
+		// Lockdown is the effective view (LockAll fanned out) — used to
+		// hide/disable UI affordances. LockdownRaw is the literal stored
+		// flags, used by the Hardening section to decide which checkboxes
+		// to render (raw-true ones are removed entirely so the operator
+		// cannot uncheck them via the UI).
+		"Lockdown":    s.config.LockdownEffective(),
+		"LockdownRaw": s.config.Snapshot().Lockdown,
 		"Theme":            snap.Theme,
 		"TZ":               snap.Timezone,
 		"TF":               snap.TimeFormat,

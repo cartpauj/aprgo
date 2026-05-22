@@ -544,6 +544,12 @@ label.cb {
   font-size: 0.85rem;
   color: var(--fg);
   cursor: pointer;
+  /* Shrink the click-target to (checkbox + text + info-tip). Without
+     this, label is `display: flex` which is block-level — the empty
+     space to the right of the text remains clickable and toggles the
+     box, which feels surprising. */
+  width: fit-content;
+  max-width: 100%;
 }
 input[type="checkbox"] {
   width: 16px; height: 16px;
@@ -569,6 +575,11 @@ input[type="checkbox"] {
   display: inline-flex;
   align-items: center; justify-content: center;
   width: 15px; height: 15px;
+  /* Lock the circle's footprint — without this, the bubble becomes a
+     flex item when its parent (e.g. .beacon-head-name-label) is a flex
+     row, and on narrow viewports flex-shrink squeezes its width below
+     15px while height stays fixed → an oblong "stretched" tip. */
+  flex: 0 0 auto;
   border-radius: 50%;
   border: 1px solid var(--muted);
   color: var(--fg);
@@ -1237,6 +1248,32 @@ body.view-raw .pkt .raw-line    { display: inline; }
   letter-spacing: 0.005em;
   line-height: 1.45;
 }
+/* Hardening sub-heading inside the Account & hardening collapsible.
+   Same visual rhythm as a section head but without the card chrome —
+   it's a divider between credential fields and the lockdown checkboxes
+   within one settings-section-body. */
+.hardening-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: var(--gap-2);
+  padding-top: var(--gap-3);
+  border-top: 1px solid var(--border);
+}
+.hardening-head .title {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--fg-strong);
+  letter-spacing: -0.005em;
+}
+.hardening-head .sub {
+  font-size: 0.82rem;
+  color: var(--muted);
+  font-family: var(--font-sans);
+  letter-spacing: 0.005em;
+  line-height: 1.45;
+}
 .settings-section-body {
   padding: var(--gap-5);
   display: flex;
@@ -1833,7 +1870,7 @@ body.view-raw .pkt .raw-line    { display: inline; }
 }
 .flash.ok   { background: var(--accent-soft); color: var(--accent); border-color: rgba(var(--accent-rgb), 0.3); }
 .flash.warn { background: color-mix(in srgb, var(--warn, #d29922) 12%, transparent); color: var(--warn, #d29922); border-color: color-mix(in srgb, var(--warn, #d29922) 35%, transparent); }
-.flash.err  { background: var(--err-soft); color: var(--err); border-color: rgba(var(--err-rgb), 0.3); white-space: pre-wrap; font-family: var(--font-mono); font-size: 0.8rem; }
+.flash.err  { background: var(--err-soft); color: var(--err); border-color: rgba(var(--err-rgb), 0.3); font-family: var(--font-mono); font-size: 0.8rem; }
 .flash.err.flash-banner::before { content: "!"; background: var(--err); }
 
 /* ─── Misc tags / pills ──────────────────────────────────────────────── */

@@ -16,7 +16,7 @@
 <body>
 {{if .Authed}}
 {{if .DefaultPassword}}<div class="default-pw-banner">
-  ⚠ The admin password is still <code>admin</code> — <a href="/settings">change it</a> before anyone else does.
+  ⚠ The admin password is still <code>admin</code> — <a href="/settings#account">change it</a> before anyone else does.
 </div>{{end}}
 {{if .ISLastError}}<div class="conn-err-banner">
   ⚠ APRS-IS disconnected: <code>{{.ISLastError}}</code>

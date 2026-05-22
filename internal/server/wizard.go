@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"aprgo/internal/config"
 	"aprgo/internal/state"
 	"aprgo/internal/tnc"
 )
@@ -212,6 +213,13 @@ func (s *Server) wizardSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.requireCSRF(w, r) {
+		return
+	}
+	// Wizard writes state — same lockdown as the Settings page. First-run
+	// flow still works because lockdown defaults off; an operator who
+	// locks settings later can still complete the wizard only by editing
+	// the config file to unlock and restarting.
+	if !s.requireUnlocked(w, func(l config.Lockdown) bool { return l.LockSettings }, "settings") {
 		return
 	}
 	step := strings.TrimPrefix(r.URL.Path, "/setup/save/")

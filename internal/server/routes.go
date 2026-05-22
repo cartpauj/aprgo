@@ -6,6 +6,7 @@ import (
 	"html"
 	"html/template"
 	"math"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"aprgo/internal/aprs"
 	"aprgo/internal/ax25"
+	"aprgo/internal/config"
 	"aprgo/internal/igate"
 	"aprgo/internal/state"
 	"aprgo/internal/store"
@@ -56,7 +58,7 @@ func (s *Server) routes() http.Handler {
 	a.HandleFunc("/messages/retry/", s.handleMessageRetry)
 	a.HandleFunc("/settings", s.handleSettings)
 	a.HandleFunc("/settings/save", s.handleSettingsSave)
-	a.HandleFunc("/settings/password", s.handleChangePassword)
+	a.HandleFunc("/settings/account", s.handleAccount)
 	a.HandleFunc("/logs", s.handleDiagnostics)
 	a.HandleFunc("/logs/rows", s.handleDiagnosticsRows)
 	a.HandleFunc("/logs/tail", s.handleDiagnosticsLog)
@@ -73,7 +75,7 @@ func (s *Server) routes() http.Handler {
 
 	// First-run wall: any unauthenticated landing that doesn't have a callsign
 	// is forced through the wizard. The wizard itself is auth-gated to keep it
-	// behind login (default password is still 'admin').
+	// behind login (default password applies on first run).
 	mux.Handle("/", s.auth.RequireLogin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.state.Snapshot().SetupComplete && !strings.HasPrefix(r.URL.Path, "/setup") && r.URL.Path != "/logout" {
 			http.Redirect(w, r, "/setup", http.StatusFound)
@@ -81,7 +83,119 @@ func (s *Server) routes() http.Handler {
 		}
 		a.ServeHTTP(w, r)
 	})))
-	return mux
+	// Wrap everything with the transport gate. Non-loopback HTTP gets
+	// redirected to the HTTPS port; HTTPS and loopback pass through.
+	// /healthz + /readyz remain reachable over plain HTTP so a monitor
+	// (or systemd watchdog) on the LAN doesn't have to bother with TLS.
+	return s.transportGate(mux)
+}
+
+// transportGate scopes HTTPS-vs-HTTP per path.
+//
+//   - HTTPS from anywhere → pass.
+//   - Loopback (HTTP or HTTPS) → pass; the operator on the box itself has
+//     shell access already, no point inconveniencing them.
+//   - HTTP from non-loopback, on a non-critical path → pass. Read-only
+//     pages (Dashboard, Map, Stations, Stats, Diagnostics, login,
+//     /static, /healthz, /readyz) work over plain HTTP.
+//   - HTTP from non-loopback, on a critical path → 308-redirect to HTTPS.
+//     Critical paths are the ones that mutate state or expose private
+//     content: /settings, /messages, /bulletins, /setup.
+//
+// First-run carve-out: until state.SetupComplete=true the gate stands
+// down entirely so a fresh operator can complete onboarding without
+// first wrestling with a self-signed cert warning. The default
+// admin/admin credential is the only secret in play during that window
+// and it isn't actually a secret.
+//
+// 307 (temporary + preserves method) is used so a form POST that lands
+// on HTTP by mistake survives the bounce — browsers re-issue the same
+// method and body against the new URL. We deliberately do NOT use 308
+// (permanent) because permanent redirects get cached aggressively by
+// browsers; if a path's classification ever changes (critical → not, or
+// vice versa) clients with a cached 308 would skip the server roundtrip
+// and behave incorrectly until cache eviction. Cache-Control: no-store
+// belt-and-suspenders.
+func (s *Server) transportGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS != nil || isLoopback(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !s.state.Snapshot().SetupComplete {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !isCriticalPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		target := s.httpsRedirectURL(r)
+		w.Header().Set("Location", target)
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	})
+}
+
+// isCriticalPath reports whether the URL path mutates state or exposes
+// content the operator opted to require HTTPS for (settings forms,
+// private messages, bulletin compose, the wizard). Anything else
+// (read-only views, public health probes, login flow, static assets)
+// is reachable over plain HTTP from the LAN.
+func isCriticalPath(p string) bool {
+	return strings.HasPrefix(p, "/settings") ||
+		strings.HasPrefix(p, "/messages") ||
+		strings.HasPrefix(p, "/bulletins") ||
+		strings.HasPrefix(p, "/setup")
+}
+
+// isLoopback reports whether the request originated from 127.0.0.0/8 or ::1.
+// Trusts r.RemoteAddr — aprgo does NOT honor X-Forwarded-For here because
+// the transport gate is a *transport* check, not an identity check, and
+// upstream proxies are responsible for re-terminating TLS themselves.
+func isLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
+}
+
+// httpsRedirectURL rewrites the inbound HTTP URL to the HTTPS equivalent on
+// the configured TLS port. Falls back to the request's Host (minus its
+// existing port, if any) when the configured ListenHTTPS uses :PORT form.
+func (s *Server) httpsRedirectURL(r *http.Request) string {
+	host := r.Host
+	if i := strings.LastIndex(host, ":"); i >= 0 {
+		// Strip a port off the Host header. IPv6 literals are bracketed
+		// (`[::1]:14473`) so LastIndex(":") lands on the port colon.
+		host = host[:i]
+	}
+	port := s.opts.ListenHTTPS
+	if strings.HasPrefix(port, ":") {
+		port = port[1:]
+	} else if i := strings.LastIndex(port, ":"); i >= 0 {
+		port = port[i+1:]
+	}
+	if port == "" {
+		port = "443"
+	}
+	target := "https://" + host + ":" + port + r.URL.RequestURI()
+	return target
+}
+
+// requireUnlocked returns true (writes 403 + false) if the given lockdown
+// flag is set. Use at the top of mutating handlers after CSRF.
+func (s *Server) requireUnlocked(w http.ResponseWriter, flag func(config.Lockdown) bool, what string) bool {
+	if flag(s.config.LockdownEffective()) {
+		http.Error(w, "locked by config: "+what+" is disabled. Edit aprgo.conf and restart aprgo to undo.", http.StatusForbidden)
+		return false
+	}
+	return true
 }
 
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
@@ -1110,6 +1224,9 @@ func (s *Server) handleBulletinsSave(w http.ResponseWriter, r *http.Request) {
 	if !s.requireCSRF(w, r) {
 		return
 	}
+	if !s.requireUnlocked(w, func(l config.Lockdown) bool { return l.DisableBulletins }, "bulletins") {
+		return
+	}
 	raw := r.FormValue("groups")
 	nws := r.FormValue("nws_subscribed") == "1"
 	var groups []string
@@ -1217,6 +1334,9 @@ func (s *Server) handleMessageCancel(w http.ResponseWriter, r *http.Request) {
 	if !s.requireCSRF(w, r) {
 		return
 	}
+	if !s.requireUnlocked(w, func(l config.Lockdown) bool { return l.DisableMessaging }, "messaging") {
+		return
+	}
 	idStr := strings.TrimPrefix(r.URL.Path, "/messages/cancel/")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil || id <= 0 {
@@ -1251,6 +1371,9 @@ func (s *Server) handleMessageRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.requireCSRF(w, r) {
+		return
+	}
+	if !s.requireUnlocked(w, func(l config.Lockdown) bool { return l.DisableMessaging }, "messaging") {
 		return
 	}
 	idStr := strings.TrimPrefix(r.URL.Path, "/messages/retry/")
@@ -1309,6 +1432,9 @@ func (s *Server) handleMessageSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.requireCSRF(w, r) {
+		return
+	}
+	if !s.requireUnlocked(w, func(l config.Lockdown) bool { return l.DisableMessaging }, "messaging") {
 		return
 	}
 	snap := s.state.Snapshot()
@@ -1491,6 +1617,9 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	if !s.requireCSRF(w, r) {
 		return
 	}
+	if !s.requireUnlocked(w, func(l config.Lockdown) bool { return l.LockSettings }, "settings") {
+		return
+	}
 	// Per-field validation up front. Accumulate all errors so the user can
 	// fix them in one pass instead of whack-a-mole.
 	var verrs []string
@@ -1659,8 +1788,22 @@ func flash(w http.ResponseWriter, ok bool, msg string) {
 	fmt.Fprintf(w, `<div class="flash %s">%s</div>`, class, html.EscapeString(msg))
 }
 
-// handleChangePassword: HTMX endpoint posted from the settings page.
-func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+// handleAccount: HTMX endpoint posted from the Settings → Account form.
+// Saves username, password (optional), and lockdown flags in one shot.
+//
+// The current password is required as a re-auth challenge only when the
+// operator is actually changing username or password — toggling a
+// lockdown checkbox alone doesn't need it. (The CSRF token + session
+// cookie already authenticate the request; current-password is the
+// extra "are you really you?" gate for identity-affecting changes.)
+//
+// Lockdown enforcement: enabling LockSettings here does NOT lock this
+// handler against itself, because the gate check runs at request entry
+// before the new value is applied. Once the operator clicks Save with
+// "Lock settings" ticked, this handler succeeds — but every subsequent
+// settings/account write returns 403 until the operator edits aprgo.conf
+// and restarts.
+func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		flash(w, false, "POST required")
 		return
@@ -1672,22 +1815,70 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if !s.requireCSRF(w, r) {
 		return
 	}
-	current := r.FormValue("current")
+	if !s.requireUnlocked(w, func(l config.Lockdown) bool { return l.LockSettings }, "settings") {
+		return
+	}
+
+	newUser := strings.TrimSpace(r.FormValue("username"))
 	newPass := r.FormValue("new")
 	confirm := r.FormValue("confirm")
-	if !s.state.CheckPassword(current) {
-		flash(w, false, "Current password incorrect.")
-		return
+	usernameChanging := newUser != "" && newUser != s.config.Username()
+	passwordChanging := newPass != "" || confirm != ""
+
+	if usernameChanging || passwordChanging {
+		current := r.FormValue("current")
+		if current == "" {
+			flash(w, false, "Current password required to change username or password.")
+			return
+		}
+		if !s.config.CheckPassword(current) {
+			flash(w, false, "Current password incorrect.")
+			return
+		}
 	}
-	if newPass != confirm {
-		flash(w, false, "New password and confirmation do not match.")
-		return
+
+	if usernameChanging {
+		if err := config.ValidateUsername(newUser); err != nil {
+			flash(w, false, err.Error())
+			return
+		}
+		if err := s.config.SetUsername(newUser); err != nil {
+			flash(w, false, err.Error())
+			return
+		}
 	}
-	if err := s.state.SetPassword(newPass); err != nil {
+
+	if passwordChanging {
+		if newPass != confirm {
+			flash(w, false, "New password and confirmation do not match.")
+			return
+		}
+		if err := s.config.SetPassword(newPass); err != nil {
+			flash(w, false, err.Error())
+			return
+		}
+	}
+
+	// Lockdown flags. Each checkbox posts "1" when ticked, absent
+	// otherwise. The lockdown is RATCHETED — the UI can only flip OFF→ON,
+	// never ON→OFF. Once a flag is on, the only way back is to edit
+	// aprgo.conf on the server and restart aprgo. This is enforced two
+	// ways: the template hides the checkbox for any already-true flag,
+	// and the handler OR's the form value against the existing raw value
+	// so a hand-crafted POST that omits a locked flag cannot clear it.
+	curRaw := s.config.Snapshot().Lockdown
+	newLock := config.Lockdown{
+		LockSettings:     curRaw.LockSettings || r.FormValue("lock_settings") == "1",
+		DisableMessaging: curRaw.DisableMessaging || r.FormValue("disable_messaging") == "1",
+		DisableBulletins: curRaw.DisableBulletins || r.FormValue("disable_bulletins") == "1",
+		LockAll:          curRaw.LockAll || r.FormValue("lock_all") == "1",
+	}
+	if err := s.config.SetLockdown(newLock); err != nil {
 		flash(w, false, err.Error())
 		return
 	}
-	flash(w, true, "Password updated.")
+
+	flash(w, true, "Account saved.")
 }
 
 // handleStats renders the operator stats summary: at-a-glance counters,

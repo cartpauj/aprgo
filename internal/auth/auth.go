@@ -1,7 +1,8 @@
 // Package auth: minimal single-admin session auth via signed cookies.
 //
-// Password and session key come from the state.Store so they persist across
-// restarts and can be changed at runtime via the settings page.
+// Username, password hash, and session HMAC key all come from the
+// config.Store (loaded at startup, persisted to aprgo.conf). The username
+// is operator-configurable — there is no hardcoded "admin" any longer.
 package auth
 
 import (
@@ -14,36 +15,34 @@ import (
 	"strings"
 	"time"
 
-	"aprgo/internal/state"
+	"aprgo/internal/config"
 )
 
 const (
-	AdminUser    = "admin"
-	cookieName   = "aprgo_session"
+	cookieName = "aprgo_session"
 	// LAN-admin console — most operators leave it open in a browser tab and
 	// expect not to be logged out. 30 days is long enough to never bother a
 	// regular operator while still bounded so abandoned sessions expire.
 	cookieMaxAge = 30 * 24 * time.Hour
 )
 
-// Authenticator wraps the state store for credentials.
+// Authenticator wraps the config store for credentials.
 type Authenticator struct {
-	store *state.Store
+	cfg *config.Store
 }
 
-func New(store *state.Store) *Authenticator {
-	return &Authenticator{store: store}
+func New(cfg *config.Store) *Authenticator {
+	return &Authenticator{cfg: cfg}
 }
 
-// Check returns true iff the user is "admin" and the password matches.
+// Check returns true iff `user` matches the configured admin username and
+// `pass` matches the configured password hash. Always runs the bcrypt
+// compare even on a username mismatch so attackers can't time-detect
+// valid usernames.
 func (a *Authenticator) Check(user, pass string) bool {
-	if user != AdminUser {
-		// Don't short-circuit on user mismatch (timing-equal-ish);
-		// always run bcrypt against something so attackers can't time-detect user names.
-		_ = a.store.CheckPassword(pass)
-		return false
-	}
-	return a.store.CheckPassword(pass)
+	want := a.cfg.Username()
+	ok := a.cfg.CheckPassword(pass)
+	return ok && user == want
 }
 
 // IssueCookie writes a signed session cookie identifying user.
@@ -51,7 +50,7 @@ func (a *Authenticator) Check(user, pass string) bool {
 // password invalidates all outstanding sessions.
 func (a *Authenticator) IssueCookie(w http.ResponseWriter, r *http.Request, user string) {
 	exp := time.Now().Add(cookieMaxAge).Unix()
-	gen := a.store.PasswordGeneration()
+	gen := a.cfg.PasswordGeneration()
 	payload := fmt.Sprintf("%s|%d|%d", user, gen, exp)
 	mac := a.sign(payload)
 	val := base64.RawURLEncoding.EncodeToString([]byte(payload + "|" + mac))
@@ -63,21 +62,16 @@ func (a *Authenticator) IssueCookie(w http.ResponseWriter, r *http.Request, user
 		SameSite: http.SameSiteStrictMode,
 		// Secure is auto-enabled when the request reached us over TLS
 		// (direct HTTPS or behind a trusted reverse proxy passing
-		// X-Forwarded-Proto=https). For the typical LAN-HTTP deploy this
-		// stays false; CSRF protection (token + Origin + SameSite=Strict)
-		// covers the threat model in either case.
+		// X-Forwarded-Proto=https). The transport gate already redirects
+		// non-loopback HTTP to HTTPS, so under normal operation login
+		// happens over TLS and the cookie picks up Secure here.
 		Secure:  isTLSRequest(r),
 		Expires: time.Now().Add(cookieMaxAge),
 	})
 }
 
 // isTLSRequest reports whether the request was carried over TLS. Direct
-// TLS sets r.TLS; behind a reverse proxy we check X-Forwarded-Proto. The
-// X-Forwarded-Proto check is only meaningful when the proxy is trusted —
-// callers should run aprgo behind a known proxy if they rely on that path,
-// otherwise a malicious client could spoof the header to flip Secure=true
-// (which would only HURT them by making the cookie un-readable over plain
-// HTTP — so the spoof is self-defeating; we accept the simplicity).
+// TLS sets r.TLS; behind a reverse proxy we check X-Forwarded-Proto.
 func isTLSRequest(r *http.Request) bool {
 	if r == nil {
 		return false
@@ -119,11 +113,18 @@ func (a *Authenticator) Validate(r *http.Request) string {
 		return ""
 	}
 	gen, err := strconv.ParseUint(genStr, 10, 64)
-	if err != nil || gen != a.store.PasswordGeneration() {
+	if err != nil || gen != a.cfg.PasswordGeneration() {
 		return ""
 	}
 	exp, err := strconv.ParseInt(expStr, 10, 64)
 	if err != nil || time.Now().Unix() > exp {
+		return ""
+	}
+	// Reject cookies whose embedded username no longer matches the
+	// configured admin username — covers the case where the operator
+	// renames the account: existing sessions for the old username
+	// invalidate immediately on the next request.
+	if user != a.cfg.Username() {
 		return ""
 	}
 	return user
@@ -141,7 +142,7 @@ func (a *Authenticator) RequireLogin(next http.Handler) http.Handler {
 }
 
 func (a *Authenticator) sign(payload string) string {
-	m := hmac.New(sha256.New, a.store.SessionKey())
+	m := hmac.New(sha256.New, a.cfg.SessionKey())
 	_, _ = m.Write([]byte(payload))
 	return base64.RawURLEncoding.EncodeToString(m.Sum(nil))
 }

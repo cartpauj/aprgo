@@ -13,7 +13,14 @@
   {{if .Flash}}<div class="flash ok flash-banner">{{.Flash}}</div>{{end}}
   {{if .FlashErr}}<div class="flash err flash-banner">{{.FlashErr}}</div>{{end}}
 
-  {{if and (eq (printf "%s" .St.Mode) "advanced") .St.AllowSendBulletins .St.TXEnable}}
+  {{if .Lockdown.DisableBulletins}}
+  <div class="flash err">
+    Bulletins are locked by aprgo.conf — compose, send, and subscription edits
+    are disabled. Edit <code>/var/lib/aprgo/aprgo.conf</code> on the server
+    and restart aprgo to undo.
+  </div>
+  {{end}}
+  {{if and (not .Lockdown.DisableBulletins) (eq (printf "%s" .St.Mode) "advanced") .St.AllowSendBulletins .St.TXEnable}}
   <details class="bulletins-compose">
     <summary>📡 Send a bulletin</summary>
     {{if and (not .RFConnected) (not .ISConnected)}}
@@ -135,6 +142,7 @@
   {{end}}
 
   {{/* ── Subscription settings ── */}}
+  {{if not .Lockdown.DisableBulletins}}
   <details class="bulletins-settings" {{if .View.GroupList}}open{{end}}>
     <summary>Subscription</summary>
     <form method="POST" action="/bulletins/save" class="bulletins-form">
@@ -152,5 +160,6 @@
       <button type="submit" class="primary">Save subscription</button>
     </form>
   </details>
+  {{end}}
 </section>
 {{template "footer" .}}{{end}}

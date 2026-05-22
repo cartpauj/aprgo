@@ -18,6 +18,9 @@
     ⚠ Radio is connected but no AX.25 frames are decoding. The TNC may not be in KISS mode — check the TNC's mode switch / command (some need <code>KISS ON</code> or front-panel selection), confirm the baud rate, and verify it's not echoing menu prompts back over the serial line.
   </div>{{end}}
 
+  {{if .Lockdown.LockSettings}}
+  <div class="flash err">Settings are locked by aprgo.conf — all fields below are hidden. Edit <code>/var/lib/aprgo/aprgo.conf</code> on the server and restart aprgo to undo.</div>
+  {{else}}
   <form class="settings-form" hx-post="/settings/save" hx-target="#save-flash" hx-swap="innerHTML">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
 
@@ -181,7 +184,7 @@
 
         <div class="beacon-head">
           <label class="beacon-head-name-label">Name<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Local identifier only — not transmitted on air. The over-the-air packet identifies your station by Callsign-SSID, Symbol, and Comment. The name is used internally to track scheduling (last-fired time), as the key for "Fire now" actions, and in logs. Renaming a beacon orphans its prior last-fired timestamp.</span></span>
-            <input type="text" class="beacon-head-name" name="beacon_{{.Idx}}_name" value="{{.B.Name}}" size="16" maxlength="32" pattern="[A-Za-z0-9_-]+" required title="Letters, digits, dash, underscore; must be unique">
+            <input type="text" class="beacon-head-name" name="beacon_{{.Idx}}_name" value="{{.B.Name}}" size="16" maxlength="32" required title="Local label; must be unique among your beacons">
           </label>
           <div class="beacon-head-actions">
             <label class="cb"><input type="checkbox" name="beacon_{{.Idx}}_enabled" value="1" {{if .B.Enabled}}checked{{end}}> Enabled</label>
@@ -324,22 +327,62 @@
 
     {{template "saveBar" (dict "Hint" "Saves apply live. Theme change reloads the page." "FlashID" "save-flash" "Label" "Save settings")}}
   </form>
+  {{end}}
 
+  {{if not .Lockdown.LockSettings}}
   <details class="settings-section settings-section--collapsible">
     <summary class="settings-section-head">
-      <span class="title">Account</span>
-      <span class="sub">Change the password used to sign in to this UI.</span>
+      <span class="title">Account &amp; hardening</span>
+      <span class="sub">Operator credentials and UI-lockdown switches.</span>
     </summary>
-    <div class="settings-section-body">
-      <form class="account-form" hx-post="/settings/password" hx-target="#pw-flash" hx-swap="innerHTML">
+    <div class="settings-section-body stack-3">
+      <form class="settings-form" hx-post="/settings/account" hx-target="#acct-flash" hx-swap="innerHTML">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-        <label>Current password<input type="password" name="current" autocomplete="current-password" required></label>
-        <label>New password<input type="password" name="new" autocomplete="new-password" required minlength="4"></label>
-        <label>Confirm<input type="password" name="confirm" autocomplete="new-password" required minlength="4"></label>
-        {{template "saveBar" (dict "Hint" "You'll stay signed in after changing." "FlashID" "pw-flash" "Label" "Update password")}}
+
+        <div class="grid-cols-fit">
+          <label><span class="label-head">Username<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Lowercase letters, digits, <code>-</code> and <code>_</code> only. 1–32 chars. Renaming invalidates existing sessions.</span></span></span>
+            <input type="text" name="username" value="{{.AdminUsername}}" pattern="[a-z0-9_\-]{1,32}" autocomplete="username" required>
+          </label>
+          <label><span class="label-head">Current password<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Only required when changing your username or password — leave blank if you're just toggling hardening checkboxes.</span></span></span>
+            <input type="password" name="current" autocomplete="current-password">
+          </label>
+          <label><span class="label-head">New password<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Leave blank to keep your current password. Otherwise enter a new one (minimum 4 characters) and repeat it in the next field.</span></span></span>
+            <input type="password" name="new" autocomplete="new-password" minlength="4">
+          </label>
+          <label><span class="label-head">Confirm new password</span>
+            <input type="password" name="confirm" autocomplete="new-password" minlength="4">
+          </label>
+        </div>
+
+        <div class="stack-2">
+          <div class="hardening-head">
+            <span class="title">Hardening</span>
+            <span class="sub">
+              If you'll be reaching this console from outside your LAN, <strong>turn on "Lock everything"</strong> — it's the safest default. If your username is hard to guess and your password is strong, you can pick a less restrictive combination by ticking individual switches instead. Either way, <strong>each switch is one-way</strong>: easy to turn on from here, but once enabled it disappears from this UI. To undo a lockdown, edit <code>/var/lib/aprgo/aprgo.conf</code> on the server and restart aprgo.
+            </span>
+          </div>
+          {{if or .LockdownRaw.LockAll .LockdownRaw.LockSettings .LockdownRaw.DisableMessaging .LockdownRaw.DisableBulletins}}
+          <div class="flash warn">
+            <strong>Active lockdowns:</strong>
+            {{if .LockdownRaw.LockAll}}lock everything{{else}}{{if .LockdownRaw.LockSettings}}lock settings · {{end}}{{if .LockdownRaw.DisableMessaging}}disable messaging · {{end}}{{if .LockdownRaw.DisableBulletins}}disable bulletins{{end}}{{end}}
+            <div class="hint">Edit <code>/var/lib/aprgo/aprgo.conf</code> on the server and restart aprgo to undo.</div>
+          </div>
+          {{end}}
+          {{if not .LockdownRaw.LockAll}}
+          <div class="stack-2 flags-grid" id="lockdown-flags">
+            <label class="cb"><input type="checkbox" name="lock_all" value="1" id="lock-all-cb"> <strong>Lock everything</strong><span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Master switch — implies all of the flags below. Once on, this whole hardening section disappears from the UI.</span></span></label>
+            {{if not .LockdownRaw.LockSettings}}<label class="cb lockdown-sub"><input type="checkbox" name="lock_settings" value="1"> Lock settings<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Whole settings page (and the setup wizard) becomes read-only.</span></span></label>{{end}}
+            {{if not .LockdownRaw.DisableMessaging}}<label class="cb lockdown-sub"><input type="checkbox" name="disable_messaging" value="1"> Disable messaging<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Send / cancel / retry message handlers all return 403. Incoming messages still display.</span></span></label>{{end}}
+            {{if not .LockdownRaw.DisableBulletins}}<label class="cb lockdown-sub"><input type="checkbox" name="disable_bulletins" value="1"> Disable bulletins<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Bulletin compose, send, and subscription-list edits all return 403. Receiving bulletins still works. (Beacons / digipeats / gating are governed by Settings → Master TX, not by this flag.)</span></span></label>{{end}}
+          </div>
+          {{end}}
+        </div>
+
+        {{template "saveBar" (dict "Hint" "Changes apply live. You'll stay signed in unless you renamed the user." "FlashID" "acct-flash" "Label" "Save account")}}
       </form>
     </div>
   </details>
+  {{end}}
 </section>
 <script src="/static/js/settings.js" defer></script>
 

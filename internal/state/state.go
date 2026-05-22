@@ -6,8 +6,6 @@
 package state
 
 import (
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,14 +14,9 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
-
-	"golang.org/x/crypto/bcrypt"
 )
 
-const (
-	defaultPassword = "admin"
-	fileMode        = 0o600
-)
+const fileMode = 0o600
 
 // Mode controls the operating mode chosen by the user (informational; the
 // actual behavior is driven by the individual flags below, but keeping the
@@ -214,9 +207,7 @@ type State struct {
 	// changes.
 	Timezone          string `json:"timezone,omitempty"`
 	// TimeFormat is "12h" or "24h" (default "24h"). Empty defaults to 24h.
-	TimeFormat        string `json:"time_format,omitempty"`
-	AdminPasswordHash string `json:"admin_password_hash"`
-	SessionKey        string `json:"session_key"`        // base64
+	TimeFormat string `json:"time_format,omitempty"`
 
 	// First-run wizard tracking
 	SetupComplete bool `json:"setup_complete"`
@@ -245,10 +236,8 @@ const (
 type Store struct {
 	path string
 
-	mu              sync.RWMutex
-	cur             State
-	isDefaultPass   bool // cached; refreshed only on SetPassword + Open
-	passwordChanges uint64 // incremented every SetPassword; used by auth to invalidate sessions
+	mu  sync.RWMutex
+	cur State
 
 	// msgIDCur / msgIDEnd: in-memory msg-ID block reserved from state.json.
 	// We persist a watermark (`State.NextMsgID`) ahead of in-memory use so a
@@ -273,27 +262,17 @@ func Open(path string) (*Store, error) {
 		if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
-		hash, err := bcrypt.GenerateFromPassword([]byte(defaultPassword), bcrypt.DefaultCost)
-		if err != nil {
-			return nil, fmt.Errorf("hash default password: %w", err)
-		}
-		keyBytes := make([]byte, 32)
-		if _, err := rand.Read(keyBytes); err != nil {
-			return nil, fmt.Errorf("session key: %w", err)
-		}
 		s.cur = State{
-			ISServer:          DefaultISServer,
-			Theme:             DefaultTheme,
-			RetentionDays:     DefaultRetentionDays,
-			ViscousDelay:      true, // polite-fill-in default
-			TNCTXDelayMs:      DefaultTNCTXDelayMs,
-			TNCPersist:        DefaultTNCPersist,
-			TNCSlotTimeMs:     DefaultTNCSlotTimeMs,
-			TNCTXTailMs:       DefaultTNCTXTailMs,
-			IGateTXPath:       DefaultIGateTXPath,
-			NWSSubscribed:     true, // most operators want severe-weather alerts
-			AdminPasswordHash: string(hash),
-			SessionKey:        base64.StdEncoding.EncodeToString(keyBytes),
+			ISServer:      DefaultISServer,
+			Theme:         DefaultTheme,
+			RetentionDays: DefaultRetentionDays,
+			ViscousDelay:  true, // polite-fill-in default
+			TNCTXDelayMs:  DefaultTNCTXDelayMs,
+			TNCPersist:    DefaultTNCPersist,
+			TNCSlotTimeMs: DefaultTNCSlotTimeMs,
+			TNCTXTailMs:   DefaultTNCTXTailMs,
+			IGateTXPath:   DefaultIGateTXPath,
+			NWSSubscribed: true, // most operators want severe-weather alerts
 		}
 		if err := s.save(); err != nil {
 			return nil, err
@@ -342,7 +321,6 @@ func Open(path string) (*Store, error) {
 			_ = s.save()
 		}
 	}
-	s.refreshDefaultPasswordFlag()
 	return s, nil
 }
 
@@ -470,68 +448,6 @@ func (s *Store) notify(snap State) {
 		default:
 		}
 	}
-}
-
-// SessionKey returns the persisted HMAC key.
-func (s *Store) SessionKey() []byte {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	b, _ := base64.StdEncoding.DecodeString(s.cur.SessionKey)
-	return b
-}
-
-// CheckPassword constant-time-compares pass against the stored hash.
-func (s *Store) CheckPassword(pass string) bool {
-	s.mu.RLock()
-	hash := s.cur.AdminPasswordHash
-	s.mu.RUnlock()
-	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(pass)) == nil
-}
-
-// SetPassword hashes and persists a new password.
-func (s *Store) SetPassword(newPass string) error {
-	if len(newPass) < 4 {
-		return errors.New("password must be at least 4 characters")
-	}
-	// bcrypt outside the write lock — ~100ms otherwise blocks all readers.
-	hash, err := bcrypt.GenerateFromPassword([]byte(newPass), bcrypt.DefaultCost)
-	if err != nil {
-		return err
-	}
-	err = s.Update(func(st *State) error {
-		st.AdminPasswordHash = string(hash)
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	s.mu.Lock()
-	s.passwordChanges++
-	s.isDefaultPass = newPass == defaultPassword
-	s.mu.Unlock()
-	return nil
-}
-
-// IsDefaultPassword reports whether the password is still "admin".
-// Cached on Open/SetPassword — does NOT bcrypt-compare on each call.
-func (s *Store) IsDefaultPassword() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.isDefaultPass
-}
-
-// PasswordGeneration returns a counter that increments on every password
-// change. Auth tokens may embed this so old cookies become invalid post-change.
-func (s *Store) PasswordGeneration() uint64 {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.passwordChanges
-}
-
-// refreshDefaultPasswordFlag does the (expensive) bcrypt compare exactly once.
-// Caller must hold s.mu.
-func (s *Store) refreshDefaultPasswordFlag() {
-	s.isDefaultPass = bcrypt.CompareHashAndPassword([]byte(s.cur.AdminPasswordHash), []byte(defaultPassword)) == nil
 }
 
 // Interval returns the configured beacon interval as a time.Duration, or 0
