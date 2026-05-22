@@ -1,12 +1,21 @@
 # nfpm config — produces .deb and .rpm packages for aprgo.
 #
-# CI (.github/workflows/release.yml) supplies:
-#   VERSION    — e.g. "1.0.0" (the git tag minus the leading "v")
-#   ARCH       — Debian arch name: amd64, arm64, armhf, armhf-v6, i386
+# CI (.github/workflows/release.yml) exports three env vars before running:
+#
+#   VERSION    — e.g. "1.0.0" (git tag minus the leading "v")
+#   ARCH       — Debian arch name: amd64, arm64, armhf (for both ARMv6 + ARMv7
+#                builds — Raspberry Pi OS's armhf is ARMv6-baseline; Debian's
+#                is ARMv7. We ship two .debs both tagged armhf and disambiguate
+#                with the file_name_template suffix below.)
 #   GO_BINARY  — path to the pre-built static aprgo binary for that arch
 #
-# Run as:  nfpm pkg --packager deb --target out/ --config deploy/nfpm.yaml
-#          nfpm pkg --packager rpm --target out/ --config deploy/nfpm.yaml
+# nfpm natively expands ${VAR} in most top-level fields. For contents[] entries
+# we have to set `expand: true` per entry — without it, the literal ${...}
+# survives into the package and the glob fails.
+#
+# Run as:
+#   nfpm pkg --packager deb --target out/ --config deploy/nfpm.yaml
+#   nfpm pkg --packager rpm --target out/ --config deploy/nfpm.yaml
 
 name: aprgo
 arch: ${ARCH}
@@ -24,25 +33,41 @@ description: |
 homepage: https://github.com/cartpauj/aprgo
 license: MIT
 
+# Per-format output filename. We deliberately ship TWO armhf .debs (one
+# built for ARMv6 baseline, one for ARMv7+), differentiated only by the
+# filename suffix the workflow sets via $VARIANT — dpkg can't tell them
+# apart by metadata. README guidance steers Pi Zero / Pi 1 users to the
+# `-armv6` variant.
+deb:
+  file_name_template: 'aprgo_${VERSION}_${ARCH}${VARIANT}.deb'
+
+rpm:
+  file_name_template: 'aprgo-${VERSION}.${ARCH}.rpm'
+
 # Soft dependencies. The aprgo binary itself is fully static (no shared-lib
 # deps), so nothing is strictly Required. Bluez is needed only for
-# Bluetooth TNCs; direwolf only for soundcard setups. Recommends installs
-# them by default on apt/dnf unless the operator opted out.
+# Bluetooth TNCs; direwolf only for soundcard setups. apt + dnf both
+# honor Recommends by default unless the operator opted out.
 recommends:
   - bluez
   - bluez-tools
   - direwolf
 
+# Modern unified path. /usr/lib/systemd/system is the upstream-systemd
+# location, used by Fedora and by Debian 12+ / Ubuntu 22.04+ (where
+# /lib/systemd/system is a usrmerge symlink). One path serves both
+# package formats.
 contents:
   - src: ${GO_BINARY}
     dst: /usr/bin/aprgo
+    expand: true
     file_info:
       mode: 0755
       owner: root
       group: root
 
   - src: deploy/aprgo.service
-    dst: /lib/systemd/system/aprgo.service
+    dst: /usr/lib/systemd/system/aprgo.service
     file_info:
       mode: 0644
       owner: root
@@ -52,22 +77,3 @@ scripts:
   postinstall: deploy/postinst.sh
   preremove:   deploy/prerm.sh
   postremove:  deploy/postrm.sh
-
-overrides:
-  rpm:
-    # RPM uses /usr/lib/systemd/system, not /lib/systemd/system. nfpm handles
-    # the path remap if the dst is /lib/systemd/system — but we set it
-    # explicitly here for clarity.
-    contents:
-      - src: ${GO_BINARY}
-        dst: /usr/bin/aprgo
-        file_info:
-          mode: 0755
-          owner: root
-          group: root
-      - src: deploy/aprgo.service
-        dst: /usr/lib/systemd/system/aprgo.service
-        file_info:
-          mode: 0644
-          owner: root
-          group: root

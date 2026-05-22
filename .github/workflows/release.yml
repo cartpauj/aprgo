@@ -4,11 +4,9 @@
 # (and four of them as .rpm — Pi Zero / ARMv6 has no realistic RPM
 # target), and uploads everything to the GitHub Release page for the tag.
 #
-# To cut a release locally:
+# To cut a release:
 #   git tag v1.0.0
 #   git push origin v1.0.0
-#
-# That's it. No artifacts to upload by hand.
 
 name: release
 
@@ -18,7 +16,9 @@ on:
       - 'v*'
 
 permissions:
-  contents: write   # needed to create the release + upload assets
+  contents: write
+  id-token: write       # for build-provenance attestation
+  attestations: write
 
 jobs:
   build:
@@ -28,12 +28,12 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          # name        Go GOARCH/GOARM         Debian arch    RPM arch?
-          - { name: "amd64",     goarch: "amd64", goarm: "",  deb_arch: "amd64",     rpm_arch: "x86_64"   }
-          - { name: "arm64",     goarch: "arm64", goarm: "",  deb_arch: "arm64",     rpm_arch: "aarch64"  }
-          - { name: "armv7",     goarch: "arm",   goarm: "7", deb_arch: "armhf",     rpm_arch: "armv7hl"  }
-          - { name: "armv6",     goarch: "arm",   goarm: "6", deb_arch: "armhf-v6",  rpm_arch: ""         }
-          - { name: "i386",      goarch: "386",   goarm: "",  deb_arch: "i386",      rpm_arch: "i686"     }
+          # name          Go GOARCH / GOARM     deb arch    deb suffix    rpm arch
+          - { name: "amd64", goarch: "amd64", goarm: "",  deb_arch: "amd64", deb_variant: "",        rpm_arch: "x86_64"   }
+          - { name: "arm64", goarch: "arm64", goarm: "",  deb_arch: "arm64", deb_variant: "",        rpm_arch: "aarch64"  }
+          - { name: "armv7", goarch: "arm",   goarm: "7", deb_arch: "armhf", deb_variant: "",        rpm_arch: "armv7hl"  }
+          - { name: "armv6", goarch: "arm",   goarm: "6", deb_arch: "armhf", deb_variant: "-armv6",  rpm_arch: ""         }
+          - { name: "i386",  goarch: "386",   goarm: "",  deb_arch: "i386",  deb_variant: "",        rpm_arch: "i686"     }
 
     steps:
       - uses: actions/checkout@v4
@@ -47,11 +47,12 @@ jobs:
       - name: Resolve version
         id: ver
         run: |
-          # Strip the leading v from the tag → "v1.2.3" → "1.2.3".
-          # Package metadata wants the numeric version.
+          # Strip the leading v from the tag → "v1.2.3" → "1.2.3" for
+          # package metadata. Keep the tagged form for ldflags so
+          # `aprgo --version` shows the canonical "v1.2.3".
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
-          echo "tag=${TAG}"     >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}"         >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Build aprgo (${{ matrix.target.name }})
@@ -67,11 +68,13 @@ jobs:
             -trimpath \
             -o out/aprgo \
             ./cmd/aprgo
+          file out/aprgo
           ls -la out/
 
       - name: Install nfpm
         run: |
-          curl -fsSL https://github.com/goreleaser/nfpm/releases/download/v2.41.3/nfpm_2.41.3_Linux_x86_64.tar.gz \
+          NFPM_VERSION=2.46.3
+          curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" \
             | tar -xz -C /tmp nfpm
           sudo install -m 0755 /tmp/nfpm /usr/local/bin/nfpm
           nfpm --version
@@ -80,9 +83,12 @@ jobs:
         env:
           VERSION:   ${{ steps.ver.outputs.version }}
           ARCH:      ${{ matrix.target.deb_arch }}
+          VARIANT:   ${{ matrix.target.deb_variant }}
           GO_BINARY: out/aprgo
         run: |
-          nfpm pkg --packager deb --target out/ --config deploy/nfpm.yaml
+          # nfpm v2.46+ expands ${VAR} natively in most fields; contents[]
+          # entries need explicit `expand: true` (already set in nfpm.yaml).
+          nfpm package --packager deb --target out/ --config deploy/nfpm.yaml
           ls -la out/
 
       - name: Build .rpm
@@ -90,24 +96,19 @@ jobs:
         env:
           VERSION:   ${{ steps.ver.outputs.version }}
           ARCH:      ${{ matrix.target.rpm_arch }}
+          VARIANT:   ''
           GO_BINARY: out/aprgo
         run: |
-          nfpm pkg --packager rpm --target out/ --config deploy/nfpm.yaml
+          nfpm package --packager rpm --target out/ --config deploy/nfpm.yaml
           ls -la out/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: aprgo-${{ matrix.target.name }}
-          path: out/aprgo_*.deb
-          if-no-files-found: error
-
-      - name: Upload RPM artifact
-        if: matrix.target.rpm_arch != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: aprgo-${{ matrix.target.name }}-rpm
-          path: out/aprgo-*.rpm
+          path: |
+            out/aprgo_*.deb
+            out/aprgo-*.rpm
           if-no-files-found: error
 
   release:
@@ -116,11 +117,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write       # attestations
+      id-token: write
       attestations: write
 
     steps:
-      - uses: actions/checkout@v4   # for release notes from CHANGELOG/README if we want
+      - uses: actions/checkout@v4
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -132,14 +133,15 @@ jobs:
         run: ls -la dist/
 
       - name: Attest provenance
-        # Native GitHub attestation — proves these artifacts came from
-        # this exact workflow run on this commit. No GPG key to manage.
-        uses: actions/attest-build-provenance@v2
+        # Proves these artifacts came from this exact workflow run on
+        # this commit. No GPG key to manage. v4 is current as of 2026.
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: 'dist/aprgo_*.deb dist/aprgo-*.rpm'
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        # v3 uses Node 24 (GitHub deprecates Node-20 actions 2026-06-02).
+        uses: softprops/action-gh-release@v3
         with:
           name: aprgo ${{ github.ref_name }}
           generate_release_notes: true

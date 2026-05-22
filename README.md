@@ -22,13 +22,15 @@ Detects your distro family and CPU arch, pulls the matching `.deb` or `.rpm` fro
 
 ### Supported prebuilt platforms
 
-| Architecture | `.deb` | `.rpm` | Typical hardware |
+| Filename suffix | `.deb` | `.rpm` | Typical hardware |
 |---|---|---|---|
 | `amd64` / `x86_64` | ✓ | ✓ | Modern x86 servers, PCs, **Wyse 3040 / 5070**, Intel NUC, cloud VPS |
 | `arm64` / `aarch64` | ✓ | ✓ | **Pi 3 (64-bit OS), Pi 4, Pi 5, Pi Zero 2 W**, AWS Graviton, ARM SBCs |
-| `armhf` (ARMv7) | ✓ | ✓ | **Pi 2, Pi 3 / 4 on 32-bit RPi OS**, BeagleBone Black |
-| `armhf-v6` (ARMv6) | ✓ | — | **Pi 1, Pi Zero, Pi Zero W** |
+| `armhf` (ARMv7) | ✓ | ✓ as `armv7hl` | **Pi 2, Pi 3 / 4 on 32-bit RPi OS**, BeagleBone Black |
+| `armhf-armv6` | ✓ | — | **Pi 1, Pi Zero, Pi Zero W** (Raspberry Pi OS only) |
 | `i386` / `i686` | ✓ | ✓ | Old 32-bit x86 thin clients (Wyse 3010-class Atom), netbooks |
+
+Both ARMv7 and ARMv6 .debs are tagged `Architecture: armhf` in the package metadata (Debian doesn't have a separate ARMv6 arch). They're disambiguated by the filename suffix — Pi Zero / Pi 1 users want the `armhf-armv6` file; everyone else on 32-bit RPi OS wants plain `armhf`.
 
 aprgo's first-class operating system is **Linux with systemd**. macOS, Windows, and *BSD aren't supported — the Bluetooth pairing path uses BlueZ (Linux-only) and the install wires up a systemd unit.
 

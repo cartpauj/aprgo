@@ -73,8 +73,9 @@ case "$RAW_ARCH" in
         RPM_ARCH="armv7hl"
         ;;
     armv6l|armv6)
-        # Pi Zero / Pi 1 — our armhf-v6 build. No RPM ships for this arch.
-        DEB_ARCH="armhf-v6"
+        # Pi Zero / Pi 1 — both ARMv6 and ARMv7 packages are tagged
+        # Architecture: armhf, so we disambiguate via filename suffix.
+        DEB_ARCH="armhf-armv6"   # composed filename suffix; not a real Debian arch
         RPM_ARCH=""
         ;;
     i386|i486|i586|i686)
