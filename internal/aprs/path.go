@@ -13,7 +13,7 @@ import "strings"
 //   IsQConstruct so the UI can render them as a separate badge instead
 //   of mixing them into the AX.25 digipeater chain.
 type PathHop struct {
-	Call         string // e.g. "WIDE1-1", "KG7OKR-10", or "qAR"
+	Call         string // e.g. "WIDE1-1", "N0CALL-10", or "qAR"
 	Used         bool   // '*' marker stripped from Call
 	IsQConstruct bool   // true for qAR/qAC/qAO/qAS/qAx (and the iGate call following it)
 }
