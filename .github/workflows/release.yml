@@ -145,9 +145,14 @@ jobs:
       - name: Attest provenance
         # Proves these artifacts came from this exact workflow run on
         # this commit. No GPG key to manage. v4 is current as of 2026.
+        # subject-path takes a multiline string for multiple globs —
+        # a single space-separated string is interpreted as one literal
+        # path and fails to match.
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: 'dist/aprgo_*.deb dist/aprgo-*.rpm'
+          subject-path: |
+            dist/aprgo_*.deb
+            dist/aprgo-*.rpm
 
       - name: Create GitHub Release
         # v3 uses Node 24 (GitHub deprecates Node-20 actions 2026-06-02).

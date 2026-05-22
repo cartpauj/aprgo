@@ -473,6 +473,11 @@
       var movers = 0;
       for (var call in body) {
         if (focused && call !== focused) continue;
+        // Only draw trails for stations currently visible on the map.
+        // loadStations() runs immediately before us and rebuilds `markers`
+        // to reflect the active search/category filters, so absence here
+        // means the station was filtered out.
+        if (!markers.has(call)) continue;
         var pts = body[call];
         if (!Array.isArray(pts) || pts.length < 2) continue;
         movers++;
