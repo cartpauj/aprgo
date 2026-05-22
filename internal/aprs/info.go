@@ -925,6 +925,14 @@ func decodeMicE(info, dest string, d *Decoded) {
 	// packet from Kenwood TM-D710 / TH-D74 / Yaesu FT2D-3D etc.
 	if len(body) > 8 {
 		c := body[8:]
+		// Mic-E leading type-code byte (aprs.org/aprs12/mic-e-types.txt):
+		// `>` = TH-D7A, `]` = TM-D700. The byte was reserved as protocol
+		// metadata at the start of the free-text field for the two original
+		// Kenwood radios — strip it so it doesn't show as a stray char at
+		// the front of the comment.
+		if len(c) > 0 && (c[0] == '>' || c[0] == ']') {
+			c = c[1:]
+		}
 		// Only treat `}` within the first 8 bytes as the altitude terminator
 		// when the 3 preceding bytes are valid base-91 — otherwise it's a
 		// literal `}` in the comment text and the leading bytes are real
@@ -1184,11 +1192,17 @@ func decodeMessage(rest string, d *Decoded) {
 // looksLikeTimestamp reports whether `s` (7 bytes) is a valid APRS101 §6
 // timestamp: 6 digits followed by a suffix in {z,h,/}. Used to distinguish
 // `/091245z…` (position-with-timestamp) from legacy `/9…` GPS-port DTIs.
+//
+// Also accepts any uppercase ASCII letter as a suffix — real-world clients
+// (APRSIS32, Microsat WX3in1, etc.) emit non-standard suffixes like `I`,
+// and the downstream position parser fails cleanly if what follows isn't a
+// valid position, so leniency here doesn't false-positive on legacy `/N…`.
 func looksLikeTimestamp(s string) bool {
 	if len(s) != 7 {
 		return false
 	}
-	if s[6] != 'z' && s[6] != 'h' && s[6] != '/' {
+	c := s[6]
+	if c != 'z' && c != 'h' && c != '/' && !(c >= 'A' && c <= 'Z') {
 		return false
 	}
 	return isAllDigits(s[:6])

@@ -43,8 +43,10 @@ var (
 	// on dialect). We don't decode the rate but accept the suffix so
 	// the core PHG values are still extracted from PHGxxxxR / PHGxxxxx
 	// frames seen in the wild.
-	phgRE = regexp.MustCompile(`\bPHG(\d{4})[\dR]?\b`)
-	rngRE = regexp.MustCompile(`\bRNG(\d{4})\b`)
+	// Case-insensitive: spec says uppercase but aprx and some older
+	// firmware (e.g. Kantronics KPC-3 configs) emit `phgNNNN` lowercase.
+	phgRE = regexp.MustCompile(`(?i)\bPHG(\d{4})[\dR]?\b`)
+	rngRE = regexp.MustCompile(`(?i)\bRNG(\d{4})\b`)
 )
 
 func parsePHG(s string) (*PHG, string) {

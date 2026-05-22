@@ -89,6 +89,25 @@ func TestCourseSpeedStripsWithoutSpace(t *testing.T) {
 	}
 }
 
+func TestNonStandardTimestampSuffix(t *testing.T) {
+	// Real packet from Microsat WX3in1 Mini: @DDHHMM<letter> instead of
+	// the spec's {z,h,/}. Position should still decode.
+	info := "@220649I4143.09N/11149.22W#River Heights"
+	d := Decode(info, "APRS")
+	if d.Lat == nil || d.Lon == nil {
+		t.Fatalf("expected position to decode, got lat=%v lon=%v", d.Lat, d.Lon)
+	}
+}
+
+func TestLowercasePHG(t *testing.T) {
+	// Real packet: Kantronics KPC-3 emits "phg6630" in lowercase.
+	info := "!4145.27N/11143.06W#phg6630/W2,UTn"
+	d := Decode(info, "APRS")
+	if d.PHG == nil {
+		t.Fatalf("expected lowercase phg to decode")
+	}
+}
+
 // contains is a tiny strings.Contains substitute so we don't depend on
 // strings package in test (and the byte literals are clearer this way).
 func contains(s, sub string) bool {

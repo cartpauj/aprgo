@@ -22,6 +22,11 @@ name: aprgo
 arch: ${ARCH}
 platform: linux
 version: ${VERSION}
+# RPM-only: the packaging-iteration counter. RPM filenames embed this as
+# `aprgo-<version>-<release>.<arch>.rpm`. Convention is to start at 1
+# and bump if you re-cut a package without bumping the upstream version.
+# Pinned here so get.sh can construct deterministic download URLs.
+release: "1"
 section: hamradio
 priority: optional
 maintainer: cartpauj <cartpauj@caseproof.com>

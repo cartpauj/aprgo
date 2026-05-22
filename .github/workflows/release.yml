@@ -144,10 +144,9 @@ jobs:
 
       - name: Attest provenance
         # Proves these artifacts came from this exact workflow run on
-        # this commit. No GPG key to manage. v4 is current as of 2026.
-        # subject-path takes a multiline string for multiple globs —
-        # a single space-separated string is interpreted as one literal
-        # path and fails to match.
+        # this commit. Free for public repos; no GPG key to manage.
+        # subject-path needs a multiline string for multiple globs —
+        # a single space-separated string fails to match.
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: |

@@ -47,7 +47,18 @@ After `sudo systemctl start aprgo`, the console is on two ports:
 
 Default login is `admin` / `admin`. Change it on first sign-in.
 
-User documentation (operating modes, hardware compatibility, security hardening, troubleshooting, day-2 operations) will live in the project wiki.
+### Connecting a radio (TNC compatibility, in brief)
+
+aprgo speaks **KISS** — the standard packet-radio framing protocol — over whatever transport your TNC offers. How smooth that is depends on your hardware:
+
+- **Bluetooth KISS TNCs** like the **Mobilinkd TNC3 / TNC4** are the smoothest experience: turn the TNC on, run aprgo's first-run wizard, click *Scan*, pair, done. No extra software, no audio plumbing.
+- **USB / serial KISS TNCs** (NinoTNC, Kenwood TH-D74 / TM-D710G, MFJ-1270X, VR-N76, ESP32 KISS TNCs, etc.) work the same way — plug them in, the wizard lists them as `/dev/ttyUSB0` or `/dev/ttyACM0`, you pick it.
+- **Soundcard + radio** (Digirig, SignaLink USB, DRAWS, UDRC, DMK URI, SHARI, DINAH, RA-35, RTL-SDR, etc.) **does not work natively** — aprgo doesn't do AFSK / FSK modulation itself. Install [Direwolf](https://github.com/wb2osz/direwolf) (or another KISS-capable soundmodem) to bridge the audio to/from your radio, and point aprgo at Direwolf's TCP-KISS port (default `localhost:8001`).
+- **Older / non-KISS TNCs**, networked TNC hubs, or anything talking AGW/PE/TNC-2 command mode usually need [`tnc-server`](https://github.com/chrissnell/tnc-server), `kissnetd`, or similar adapter software to expose a TCP-KISS endpoint that aprgo can connect to.
+
+In short: **if your TNC is Bluetooth or USB KISS, just run aprgo**. If it's a soundcard or an older non-KISS box, **set up Direwolf or tnc-server first**, then point aprgo at it via the wizard's *TCP* option.
+
+User documentation (operating modes, hardware compatibility deep-dive, security hardening, troubleshooting, day-2 operations) will live in the project wiki.
 
 ---
 
@@ -209,22 +220,6 @@ ssh user@host 'journalctl -u aprgo -f'
 
 `/var/lib/aprgo/` survives the swap. `state.json` and `aprgo.conf` are forward-compatible — new fields default to zero on read.
 
-## Cutting a release
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-That's it. `.github/workflows/release.yml` builds for all five supported architectures in parallel, runs nfpm to produce 5 `.deb` + 4 `.rpm` files, attests build provenance, and publishes a GitHub Release page with all 9 packages attached. Total wall-clock ~2 minutes.
-
-The version flows from a single source — the git tag — into:
-- the Go binary (`-ldflags="-X main.Version=v1.0.0"`)
-- nfpm package metadata (`VERSION=1.0.0` env)
-- the release page URL + asset filenames
-
-No file in the repo needs editing between tags. To re-do a buggy tag, delete it locally + on the remote, delete the Release page in the GitHub UI, then re-tag.
-
 ## Project layout
 
 ```
@@ -252,30 +247,6 @@ deploy/            systemd unit, install.sh, nfpm.yaml, postinst/prerm/postrm sc
 web/               embed.FS for templates + static assets
 get.sh             one-line installer (curl|sh) used in the README
 ```
-
-## Roadmap
-
-See [TODO.md](TODO.md) for the current open work. Top items right now:
-- Browser push notifications (Web Push / VAPID) for incoming messages + bulletins
-- Email notifications over user-defined SMTP
-- Global TX rate cap (per-source rate limit exists; need a global backstop)
-- SSn-N regional digipeat aliases (`ARIZ1-1`, `MASS2-2`, etc.)
-- APRS-IS auth-test wizard step (verify passcode before letting the user proceed)
-- TNC test wizard step (tail the TNC for 5 s and report frame count)
-- aprx → aprgo migration subcommand
-
-## Deliberately out of scope
-
-These came up in audits but are explicitly punted on — please don't open PRs for them without discussing first:
-
-- **AFSK soundcard modem in pure Go** — Direwolf is 30k lines of refined DSP we'd take years to match. aprgo uses Direwolf as a TCP-KISS source.
-- **AGW PE protocol** — APRS doesn't need connected-mode AX.25. Out of scope unless aprgo grows into Winlink territory.
-- **Smart-beaconing for mobile stations** — aprgo targets fixed iGates + digipeaters; mobile stations have different needs.
-- **TLS APRS-IS (`:24580`)** — operator can put aprgo behind a reverse proxy if exposing the web UI beyond LAN; APRS-IS plaintext over LAN is the common case.
-- **Bundled Direwolf in `.deb`** — declared as `Recommends`, not `Depends`. Users who need it install it; aprgo doesn't manage child processes.
-- **Automatic offline-mode flip when IS goes down** — paternalistic. The operator chose a mode; aprgo shouldn't silently switch it.
-- **BLE-KISS GATT support** — BlueZ D-Bus quirks made it too fragile on desktop Linux for no benefit over Classic SPP.
-- **macOS / Windows builds** — Bluetooth pairing path uses BlueZ subprocess; systemd unit is Linux-specific. Rewriting both would be a meaningful project on its own.
 
 ## License
 

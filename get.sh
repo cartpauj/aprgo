@@ -154,7 +154,10 @@ case "$DISTRO_FAMILY" in
         ASSET="aprgo_${VERSION}_${DEB_ARCH}.deb"
         ;;
     rhel)
-        ASSET="aprgo-${VERSION}.${RPM_ARCH}.rpm"
+        # RPM filenames embed a "release" number after the version:
+        # aprgo-<version>-<release>.<arch>.rpm. We pin release=1 in
+        # deploy/nfpm.yaml so this stays predictable across builds.
+        ASSET="aprgo-${VERSION}-1.${RPM_ARCH}.rpm"
         ;;
 esac
 
