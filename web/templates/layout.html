@@ -66,8 +66,8 @@
 <main>{{end}}
 
 {{define "footer"}}</main>
-{{if .Authed}}<footer class="appfoot" aria-label="version">
-  <span class="dim">aprgo {{.Version}}</span>
+<footer class="appfoot" aria-label="version">
+  <span class="dim">aprgo <a href="https://github.com/cartpauj/aprgo" target="_blank" rel="noopener">{{.Version}}</a></span>
 </footer>
 <script>
 // Mobile nav toggle — single-file enough to live inline. Sets aria-expanded
@@ -95,6 +95,6 @@
     if (e.key === 'Escape') setOpen(false);
   });
 })();
-</script>{{end}}
+</script>
 </body>
 </html>{{end}}
