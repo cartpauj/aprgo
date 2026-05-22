@@ -18,16 +18,28 @@ install -d -o root -g root -m 0700 /var/lib/aprgo
 # 2. Binary
 install -m 0755 -o root -g root "$BIN_SRC" /usr/bin/aprgo
 
-# 3. Systemd unit
+# 3. Systemd unit. /etc/systemd/system is the documented location for
+#    locally-installed units; it also overrides /usr/lib/systemd/system
+#    so a later package install won't fight this one.
 install -m 0644 -o root -g root "$SCRIPT_DIR/aprgo.service" /etc/systemd/system/aprgo.service
 systemctl daemon-reload
 systemctl enable aprgo
+
+# 4. Start now (or restart if already running from a prior install).
+#    Skip in chroots / container builds where PID 1 isn't systemd.
+if [[ -d /run/systemd/system ]]; then
+    if systemctl is-active --quiet aprgo; then
+        systemctl try-restart aprgo || true
+    else
+        systemctl start aprgo || true
+    fi
+fi
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 [[ -z "$IP" ]] && IP="$(hostname)"
 [[ -z "$IP" ]] && IP="localhost"
 echo
-echo "  aprgo installed."
-echo "  Start it with:   sudo systemctl start aprgo"
-echo "  Then open:       https://${IP}:14439/  (accept the self-signed cert warning once)"
+echo "  aprgo installed and started."
+echo "  Open:            https://${IP}:14439/  (accept the self-signed cert warning once)"
 echo "  Default login:   admin / admin  (change immediately on first run)"
+echo "  Logs:            journalctl -u aprgo -f"

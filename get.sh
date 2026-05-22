@@ -8,8 +8,10 @@
 #   1. Detects your distro family (Debian-like vs Red Hat-like).
 #   2. Detects your CPU arch (amd64, arm64, armhf, armhf-v6, i386).
 #   3. Downloads the matching .deb or .rpm from the latest GitHub release.
-#   4. Installs it via apt-get or dnf — pulling in bluez, bluez-tools,
-#      direwolf (Recommends) on the way.
+#   4. Installs it via apt-get or dnf — pulling in bluez (+ bluez-tools
+#      on Debian) as hard deps. Soundcard (direwolf) and KISS-over-TCP
+#      (tnc-server) helpers are Suggests, so install those yourself if
+#      you need them.
 #   5. Tells you the next step.
 #
 # If your system isn't supported (different distro family, or an arch we
@@ -112,8 +114,10 @@ Build aprgo from source instead — it's a pure-Go binary, easy to compile:
   sudo ./deploy/install.sh ./aprgo
   sudo systemctl start aprgo
 
-For Bluetooth TNCs you'll additionally need:  bluez bluez-tools
-For soundcard TNC setups (Direwolf):          direwolf
+Runtime helpers (install whichever your TNC needs):
+  Bluetooth TNCs:           bluez (+ bluez-tools on Debian/Ubuntu)
+  Soundcard TNCs:           direwolf
+  KISS-over-TCP TNCs:       tnc-server
 
 Questions, hardware not listed, or RISC-V / MIPS / POWER:
 https://github.com/${GH_REPO}/issues
@@ -186,31 +190,5 @@ case "$DISTRO_FAMILY" in
 esac
 
 # ─── done ─────────────────────────────────────────────────────────────
-IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-[ -z "$IP" ] && IP="$(hostname 2>/dev/null)"
-[ -z "$IP" ] && IP="localhost"
-
-cat <<EOF
-
-==> aprgo ${TAG} installed.
-
-    Start it:        sudo systemctl start aprgo
-
-    Web console — aprgo listens on two ports:
-
-      HTTP  (http://${IP}:14473/)
-         Read-only access: Dashboard, Map, Stations, Stats, Logs.
-         Used for the first-run setup wizard. After setup, attempts
-         to reach Settings / Messages / Bulletins redirect to HTTPS.
-
-      HTTPS (https://${IP}:14439/)
-         Full access. The TLS cert is self-signed, so your browser
-         will warn the first time — click through to continue.
-
-    Default login:   admin / admin   (change it on first sign-in)
-    Logs:            journalctl -u aprgo -f
-    Status:          systemctl status aprgo
-
-Have a Bluetooth TNC? Make sure 'bluez' and 'bluez-tools' are installed.
-Using a soundcard with Direwolf? Make sure 'direwolf' is installed.
-EOF
+# The package's postinst script already printed the "aprgo installed" banner
+# with the URLs and default login — nothing more to say here.

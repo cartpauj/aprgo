@@ -15,33 +15,43 @@ else
     chmod 0700      /var/lib/aprgo
 fi
 
-# 2. systemd integration — register the unit. Don't auto-start; the
-#    operator should reach the first-run wizard at their own pace.
+# 2. systemd integration — enable for boot, then start (fresh install) or
+#    restart (upgrade) so the operator doesn't have to do it manually.
+#    deb passes "configure" on install + upgrade, with $2 = previous version
+#    on upgrade and empty on first install.
+#    rpm passes "1" on install, "2" on upgrade.
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload || true
-    if [ "$1" = "configure" ] || [ "$1" = "1" ] || [ "$1" = "2" ]; then
-        # deb passes "configure" on install + upgrade.
-        # rpm passes "1" on install, "2" on upgrade.
+
+    is_install=0
+    is_upgrade=0
+    case "${1:-}" in
+        configure)
+            if [ -z "${2:-}" ]; then is_install=1; else is_upgrade=1; fi
+            ;;
+        1) is_install=1 ;;
+        2) is_upgrade=1 ;;
+    esac
+
+    if [ "$is_install" = "1" ] || [ "$is_upgrade" = "1" ]; then
         systemctl enable aprgo.service >/dev/null 2>&1 || true
+    fi
+
+    # Skip start/restart in chroots / container builds where PID 1 isn't
+    # systemd — `systemctl is-system-running` returns "offline" there.
+    if [ -d /run/systemd/system ]; then
+        if [ "$is_install" = "1" ]; then
+            systemctl start aprgo.service >/dev/null 2>&1 || true
+        elif [ "$is_upgrade" = "1" ]; then
+            systemctl try-restart aprgo.service >/dev/null 2>&1 || true
+        fi
     fi
 else
     echo "aprgo: WARNING — systemctl not found. The package installed the binary"
     echo "       and the systemd unit, but you'll need to wire up startup yourself."
 fi
 
-# 3. Soft-warn if Bluetooth tooling is missing. The package declared
-#    bluez/bluez-tools as Recommends; this catches the case where the
-#    operator opted out and might be confused why the wizard's BT step
-#    fails later.
-if ! command -v bluetoothctl >/dev/null 2>&1; then
-    echo "aprgo: NOTE — bluetoothctl was not found in PATH."
-    echo "       Bluetooth TNCs (Mobilinkd, etc.) won't work until you install:"
-    echo "         apt install bluez bluez-tools     # Debian/Ubuntu/RPi OS"
-    echo "         dnf install bluez bluez-tools     # Fedora/RHEL"
-    echo "       Serial and TCP-KISS TNCs are unaffected."
-fi
-
-# 4. Friendly first-run hint. Only on fresh install (not upgrades).
+# 3. Friendly first-run hint. Only on fresh install (not upgrades).
 if [ "$1" = "configure" ] && [ -z "${2:-}" ]; then
     # First-time deb install (no previously-installed version arg).
     show_hint=1
@@ -57,9 +67,7 @@ if [ "$show_hint" = "1" ]; then
     [ -z "$IP" ] && IP="$(hostname 2>/dev/null)"
     [ -z "$IP" ] && IP="localhost"
     echo
-    echo "  aprgo installed."
-    echo
-    echo "  Start it:        sudo systemctl start aprgo"
+    echo "  aprgo installed and started."
     echo
     echo "  Web console — aprgo listens on two ports:"
     echo

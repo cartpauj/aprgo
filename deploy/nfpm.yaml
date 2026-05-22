@@ -39,14 +39,28 @@ description: |
 homepage: https://github.com/cartpauj/aprgo
 license: MIT
 
-# Soft dependencies. The aprgo binary itself is fully static (no shared-lib
-# deps), so nothing is strictly Required. Bluez is needed only for
-# Bluetooth TNCs; direwolf only for soundcard setups. apt + dnf both
-# honor Recommends by default unless the operator opted out.
-recommends:
-  - bluez
-  - bluez-tools
+# Dependencies. The aprgo binary itself is fully static (no shared-lib
+# deps), but Bluetooth TNC support (the common deployment shape) calls
+# bluetoothctl + rfcomm at runtime, so bluez is a hard requirement.
+# Direwolf is only needed for soundcard TNC setups — Suggests is
+# informational only (not auto-installed).
+#
+# Package naming differs between distro families:
+#   Debian/Ubuntu: bluetoothctl is in `bluez`, rfcomm is in `bluez-tools`
+#   Fedora/RHEL:   both bluetoothctl and rfcomm ship inside `bluez`
+# so the deb pulls in both names and the rpm pulls in just one.
+suggests:
   - direwolf
+  - tnc-server
+
+overrides:
+  deb:
+    depends:
+      - bluez
+      - bluez-tools
+  rpm:
+    depends:
+      - bluez
 
 # Modern unified path. /usr/lib/systemd/system is the upstream-systemd
 # location, used by Fedora and by Debian 12+ / Ubuntu 22.04+ (where
