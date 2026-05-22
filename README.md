@@ -252,6 +252,57 @@ get.sh             one-line installer (curl|sh) used in the README
 
 MIT — see [LICENSE](LICENSE).
 
-The APRS info-field parser is derived from aprx's `parse_aprs.c` (Matti Aarnio OH2MQK, MIT-licensed).
+## Attributions
 
-The embedded tocall device-identification database (`internal/aprs/data/tocalls.yaml`) is from the [aprsorg/aprs-deviceid](https://github.com/aprsorg/aprs-deviceid) project, licensed under [CC BY-SA 2.0](https://creativecommons.org/licenses/by-sa/2.0/).
+aprgo stands on a lot of other people's work. With thanks:
+
+### Code ported / derived
+
+| Source | License | Where it lives |
+|---|---|---|
+| **aprx** `parse_aprs.c` by Matti Aarnio (OH2MQK) | MIT | `internal/aprs/info.go` — Mic-E + position + uncompressed-position decoders, comment cleanup, character validation |
+
+### Bundled assets (`web/static/`)
+
+| Project | Version | License | Files |
+|---|---|---|---|
+| **[Leaflet](https://leafletjs.com/)** by Vladimir Agafonkin / CloudMade | 1.9.4 | BSD-2-Clause | `leaflet.js`, `leaflet.css` |
+| **[htmx](https://htmx.org/)** by Big Sky Software | 1.9.10 | BSD-2-Clause / 0BSD | `htmx.min.js` |
+| **[hessu/aprs-symbols](https://github.com/hessu/aprs-symbols)** by Heikki Siltala (OH7LZB) | — | MIT | `aprs-symbols-48-0.png`, `aprs-symbols-48-1.png`, `aprs-symbols-48-2.png` |
+| **[IBM Plex Sans + IBM Plex Mono](https://github.com/IBM/plex)** by IBM | — | SIL Open Font License 1.1 | `fonts/plex-*.woff2` |
+
+### Embedded data (`internal/aprs/data/`)
+
+| Project | License | Files |
+|---|---|---|
+| **[aprsorg/aprs-deviceid](https://github.com/aprsorg/aprs-deviceid)** — APRS tocall device identification registry | [CC BY-SA 2.0](https://creativecommons.org/licenses/by-sa/2.0/) | `tocalls.yaml`, `tocalls.json` |
+
+### Go module dependencies
+
+Pure-Go, no CGO. Pulled in by `go.mod`:
+
+| Module | License | What it does |
+|---|---|---|
+| `golang.org/x/crypto` | BSD-3-Clause | bcrypt for the admin password hash |
+| `golang.org/x/sys` | BSD-3-Clause | Low-level syscalls (serial port termios via `unix.Termios`) |
+| `modernc.org/sqlite` | BSD-3-Clause (SQLite itself is public domain) | The SQLite store — pure-Go translation of the C source so we don't need CGO |
+| `modernc.org/libc` + `modernc.org/memory` + `modernc.org/mathutil` | BSD-3-Clause | Transitive support packages for `modernc.org/sqlite` |
+| `github.com/dustin/go-humanize` | MIT | Human-readable byte sizes / time deltas in the stats page |
+| `github.com/google/uuid` | BSD-3-Clause | Random UUIDs (transitive) |
+| `github.com/mattn/go-isatty` | MIT | Detect terminal in `cmd/aprgo` (transitive) |
+| `github.com/ncruces/go-strftime` | MIT | strftime-style date formatting (transitive) |
+| `github.com/remyoudompheng/bigfft` | BSD-3-Clause | Large-integer FFT (transitive, via SQLite) |
+
+Full version pins + checksums are in [`go.mod`](go.mod) and [`go.sum`](go.sum).
+
+### Specification sources
+
+aprgo's protocol behavior is implemented against publicly-available APRS documentation. No proprietary specs are bundled, but credit where it's due:
+
+- **APRS Protocol Reference v1.0.1** (Bob Bruninga, WB4APR / public-domain spec)
+- **APRS aprs11 / aprs12 addenda** at [aprs.org](http://www.aprs.org) — fix14439, preemptive-digipeating, RFlimits, SSIDs, mic-e-types, spec-wx, datum, replyacks
+- **APRS-IS specifications** at [aprs-is.net](https://www.aprs-is.net) — IGating, IGateDetails, q-construct rules, Connecting
+- **AX.25 Link Access Protocol v2.2** (TAPR / public spec)
+- **base-91 telemetry** as documented at [he.fi](http://he.fi)
+
+Thanks to every operator who's poked at aprgo on the air and reported what was off. APRS is a hobby that runs on people sharing.
