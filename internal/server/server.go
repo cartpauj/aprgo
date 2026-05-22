@@ -1064,13 +1064,48 @@ func (s *Server) render(w http.ResponseWriter, name string, data any) {
 // common returns the standard template context populated with auth / theme / etc.
 // `r` is needed so we can derive the per-session CSRF token; pass nil for
 // pre-login pages (login itself) where CSRF tokens aren't applicable.
+// isTLSRequest reports whether the request was carried over TLS — either
+// direct HTTPS (r.TLS set) or behind a reverse proxy that passed
+// X-Forwarded-Proto=https. Mirrors the auth package's identical helper
+// (kept local here to avoid an internal/server → internal/auth dep just
+// for one boolean).
+func isTLSRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
 func (s *Server) common(title string, r *http.Request) map[string]any {
 	snap := s.state.Snapshot()
 	isErr, isErrAt := s.is.LastError()
 	rfErr, rfErrAt := s.rf.LastError()
+	// IsHTTPS, IsAuthed and the per-feature visibility flags drive the nav
+	// menu in layout.html. The model is: read-only views are public over
+	// both HTTP and HTTPS; mutating / private features (Messages, Settings,
+	// Bulletin compose) live on HTTPS only and require auth. The menu hides
+	// links the operator can't currently follow — over HTTP, or when the
+	// matching lockdown flag is on — rather than teasing them with dead
+	// links that bounce.
+	isHTTPS := isTLSRequest(r)
+	authed := r != nil && s.auth.Validate(r) != ""
+	lock := s.config.LockdownEffective()
 	data := map[string]any{
 		"Title":            title,
-		"Authed":           true,
+		"Authed":           authed,
+		"IsHTTPS":          isHTTPS,
+		// Per-menu-item visibility (true = render the link).
+		// Settings: authed + HTTPS + not locked-settings.
+		// Messages: authed + HTTPS + not disable-messaging.
+		// Bulletins compose/subscribe affordances live inside the page and
+		// gate on their own flags; the Bulletins nav link itself is always
+		// visible (read view is public).
+		"ShowMenuSettings": authed && isHTTPS && !lock.LockSettings,
+		"ShowMenuMessages": authed && isHTTPS && !lock.DisableMessaging,
+		"ShowMenuSignIn":   !authed,
 		"DefaultPassword":  s.config.IsDefaultPassword(),
 		"AdminUsername":    s.config.Username(),
 		// Lockdown is the effective view (LockAll fanned out) — used to

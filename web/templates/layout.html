@@ -8,12 +8,17 @@
 <link rel="preload" href="/static/fonts/plex-mono-500.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="stylesheet" href="/static/style.css">
-{{if .Authed}}<script src="/static/htmx.min.js" defer></script>
+{{/* Core scripts: needed on both public and authed pages. HTMX powers
+     interactions like Logs pagination; feed.js drives the live dashboard;
+     reltime.js refreshes "5m ago" labels. */}}
+<script src="/static/htmx.min.js" defer></script>
 <script src="/static/feed.js" defer></script>
-<script src="/static/js/reltime.js" defer></script>{{end}}
+<script src="/static/js/reltime.js" defer></script>
 {{block "head" .}}{{end}}
 </head>
 <body>
+{{/* Operator-only alert banners. These warn about config state the
+     unauthed public can't act on, so they're gated to authed sessions. */}}
 {{if .Authed}}
 {{if .DefaultPassword}}<div class="default-pw-banner">
   ⚠ The admin password is still <code>admin</code> — <a href="/settings#account">change it</a> before anyone else does.
@@ -27,6 +32,12 @@
 {{if .TXDisabled}}<div class="tx-off-banner">
   TX is off — receive-only. <a href="/settings">Enable in settings</a> if this isn't what you want.
 </div>{{end}}
+{{end}}
+{{/* Top nav: always rendered — public visitors can browse Dashboard /
+     Map / Stations / Stats / Logs / Bulletins without logging in. The
+     ShowMenu* flags hide Messages / Settings links over HTTP or when
+     the corresponding lockdown flag is on; ShowMenuSignIn flips the
+     rightmost link between "Sign in" and "Sign out". */}}
 <header class="topbar">
   <div class="topbar-inner">
     <a href="/" class="brand" aria-label="aprgo home">
@@ -41,18 +52,17 @@
     <nav id="primary-nav" aria-label="primary">
       <a href="/"          {{if eq .Title "Dashboard"}}aria-current="page"{{end}}>Live</a>
       <a href="/map"       {{if eq .Title "Map"}}aria-current="page"{{end}}>Map</a>
-      <a href="/messages"  {{if eq .Title "Messages"}}aria-current="page"{{end}}>Messages</a>
+      {{if .ShowMenuMessages}}<a href="/messages"  {{if eq .Title "Messages"}}aria-current="page"{{end}}>Messages</a>{{end}}
       <a href="/bulletins" {{if eq .Title "Bulletins"}}aria-current="page"{{end}}>Bulletins</a>
       <a href="/stations"  {{if or (eq .Title "Stations") (and (ge (len .Title) 8) (eq (slice .Title 0 8) "Station "))}}aria-current="page"{{end}}>Stations</a>
       <a href="/stats"     {{if eq .Title "Stats"}}aria-current="page"{{end}}>Stats</a>
       <a href="/logs" {{if eq .Title "Logs"}}aria-current="page"{{end}}>Logs</a>
-      <a href="/settings"  {{if eq .Title "Settings"}}aria-current="page"{{end}}>Settings</a>
-      <a href="/logout" class="nav-logout">Sign out</a>
+      {{if .ShowMenuSettings}}<a href="/settings"  {{if eq .Title "Settings"}}aria-current="page"{{end}}>Settings</a>{{end}}
+      {{if .ShowMenuSignIn}}<a href="/login" class="nav-signin">Sign in</a>{{else}}<a href="/logout" class="nav-logout">Sign out</a>{{end}}
     </nav>
-    <a href="/logout" class="logout">Sign out</a>
+    {{if .ShowMenuSignIn}}<a href="/login" class="logout">Sign in</a>{{else}}<a href="/logout" class="logout">Sign out</a>{{end}}
   </div>
 </header>
-{{end}}
 <main>{{end}}
 
 {{define "footer"}}</main>

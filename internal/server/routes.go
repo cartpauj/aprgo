@@ -23,47 +23,56 @@ import (
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 
-	// Public
+	// ─── Always-public (no auth, no TLS requirement) ────────────────────
+	// Health probes, static assets, favicon. The login/logout pages live
+	// here too — they handle their own auth flow (login issues a cookie;
+	// logout clears one). Note that transportGate routes /login to HTTPS
+	// for non-loopback HTTP, so the cookie always gets Secure set.
 	mux.HandleFunc("/login", s.handleLogin)
 	mux.HandleFunc("/logout", s.handleLogout)
 	mux.HandleFunc("/static/", s.serveStatic)
-	// /healthz: liveness (process up). Always 200 unless the binary is dead.
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
-	// Browsers ask for /favicon.ico on every cold load regardless of <link>
-	// hints. Serve the SVG; modern browsers accept it for the .ico request.
 	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/static/favicon.svg", http.StatusMovedPermanently)
 	})
-	// /readyz: readiness (RF + IS + DB all good). 503 when degraded so an
-	// external monitor (or k8s/systemd watchdog) can react.
 	mux.HandleFunc("/readyz", s.handleReadyz)
 
-	// Authed
+	// ─── Public read-only console (no auth, HTTP + HTTPS) ──────────────
+	// Anyone reaching the box can observe what aprgo is doing. Anything
+	// that mutates RF / IS state, exposes private content (DMs), or
+	// changes config lives in the authed mux below.
+	pub := http.NewServeMux()
+	pub.HandleFunc("/", s.handleDashboard)
+	pub.HandleFunc("/api/feed", s.handleFeedPoll)
+	pub.HandleFunc("/map", s.handleMap)
+	pub.HandleFunc("/api/stations", s.apiStations)
+	pub.HandleFunc("/api/trails", s.apiTrails)
+	pub.HandleFunc("/stations", s.handleStations)
+	pub.HandleFunc("/stations/", s.handleStationDetail)
+	pub.HandleFunc("/stats", s.handleStats)
+	pub.HandleFunc("/logs", s.handleDiagnostics)
+	pub.HandleFunc("/logs/rows", s.handleDiagnosticsRows)
+	pub.HandleFunc("/logs/tail", s.handleDiagnosticsLog)
+	// Bulletins are broadcasts to all stations on RF — making them
+	// readable on the web without auth matches the spirit of "broadcast."
+	// The template hides the Compose / Subscribe controls when the
+	// viewer isn't authenticated; the mutating endpoints below enforce
+	// the same on the server.
+	pub.HandleFunc("/bulletins", s.handleBulletins)
+
+	// ─── Auth-required (HTTPS only via transportGate) ──────────────────
 	a := http.NewServeMux()
-	a.HandleFunc("/", s.handleDashboard)
-	a.HandleFunc("/api/feed", s.handleFeedPoll)
-	a.HandleFunc("/map", s.handleMap)
-	a.HandleFunc("/api/stations", s.apiStations)
-	a.HandleFunc("/api/trails", s.apiTrails)
-	a.HandleFunc("/stations", s.handleStations)
-	a.HandleFunc("/stations/", s.handleStationDetail)
 	a.HandleFunc("/messages", s.handleMessages)
-	a.HandleFunc("/bulletins", s.handleBulletins)
-	a.HandleFunc("/bulletins/save", s.handleBulletinsSave)
-	a.HandleFunc("/bulletins/send", s.handleBulletinSend)
 	a.HandleFunc("/messages/send", s.handleMessageSend)
 	a.HandleFunc("/messages/thread", s.handleMessagesThread)
 	a.HandleFunc("/messages/conv-list", s.handleMessagesConvList)
 	a.HandleFunc("/messages/cancel/", s.handleMessageCancel)
 	a.HandleFunc("/messages/retry/", s.handleMessageRetry)
+	a.HandleFunc("/bulletins/save", s.handleBulletinsSave)
+	a.HandleFunc("/bulletins/send", s.handleBulletinSend)
 	a.HandleFunc("/settings", s.handleSettings)
 	a.HandleFunc("/settings/save", s.handleSettingsSave)
 	a.HandleFunc("/settings/account", s.handleAccount)
-	a.HandleFunc("/logs", s.handleDiagnostics)
-	a.HandleFunc("/logs/rows", s.handleDiagnosticsRows)
-	a.HandleFunc("/logs/tail", s.handleDiagnosticsLog)
-	a.HandleFunc("/stats", s.handleStats)
-	// Wizard routes
 	a.HandleFunc("/setup", s.wizardStart)
 	a.HandleFunc("/setup/", s.wizardRouter)
 	a.HandleFunc("/setup/save/", s.wizardSave)
@@ -73,20 +82,42 @@ func (s *Server) routes() http.Handler {
 	a.HandleFunc("/setup/tnc/pair-status", s.handlePairStatus)
 	a.HandleFunc("/setup/tnc/pairing", s.handlePairingPage)
 
-	// First-run wall: any unauthenticated landing that doesn't have a callsign
-	// is forced through the wizard. The wizard itself is auth-gated to keep it
-	// behind login (default password applies on first run).
-	mux.Handle("/", s.auth.RequireLogin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.state.Snapshot().SetupComplete && !strings.HasPrefix(r.URL.Path, "/setup") && r.URL.Path != "/logout" {
+	// Authed mux: gated by RequireLogin (302/HX-Redirect on missing
+	// cookie). transportGate above forces HTTPS for these paths.
+	authed := s.auth.RequireLogin(a)
+
+	// Combine: a request first tries the authed paths (specific match);
+	// if no match there, falls through to the public mux. http.ServeMux's
+	// specificity rules make this safe — pub's "/" catch-all only fires
+	// when nothing in `a` matched.
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// First-run wall: until setup completes, force any landing onto
+		// the wizard (which is in the authed mux but exempt from the
+		// transport gate via the !SetupComplete carve-out). The default
+		// admin/admin credential is the only secret in play in that
+		// window and isn't actually a secret.
+		if !s.state.Snapshot().SetupComplete &&
+			!strings.HasPrefix(r.URL.Path, "/setup") &&
+			r.URL.Path != "/logout" &&
+			r.URL.Path != "/login" {
 			http.Redirect(w, r, "/setup", http.StatusFound)
 			return
 		}
-		a.ServeHTTP(w, r)
-	})))
-	// Wrap everything with the transport gate. Non-loopback HTTP gets
-	// redirected to the HTTPS port; HTTPS and loopback pass through.
-	// /healthz + /readyz remain reachable over plain HTTP so a monitor
-	// (or systemd watchdog) on the LAN doesn't have to bother with TLS.
+		// Dispatch: if the authed mux has a route for this path, use the
+		// RequireLogin-wrapped version of it. Otherwise fall through to
+		// the public mux. `ServeMux.Handler` returns ("", _) for paths
+		// with no registered match, which is the signal we want.
+		if _, pattern := a.Handler(r); pattern != "" {
+			authed.ServeHTTP(w, r)
+			return
+		}
+		pub.ServeHTTP(w, r)
+	}))
+	// Wrap everything with the transport gate. Non-loopback HTTP on a
+	// critical path gets redirected to the HTTPS port; HTTPS and
+	// loopback pass through. /healthz + /readyz remain reachable over
+	// plain HTTP so a monitor (or systemd watchdog) on the LAN doesn't
+	// have to bother with TLS.
 	return s.transportGate(mux)
 }
 
@@ -95,12 +126,14 @@ func (s *Server) routes() http.Handler {
 //   - HTTPS from anywhere → pass.
 //   - Loopback (HTTP or HTTPS) → pass; the operator on the box itself has
 //     shell access already, no point inconveniencing them.
-//   - HTTP from non-loopback, on a non-critical path → pass. Read-only
-//     pages (Dashboard, Map, Stations, Stats, Diagnostics, login,
-//     /static, /healthz, /readyz) work over plain HTTP.
-//   - HTTP from non-loopback, on a critical path → 308-redirect to HTTPS.
-//     Critical paths are the ones that mutate state or expose private
-//     content: /settings, /messages, /bulletins, /setup.
+//   - HTTP from non-loopback, on a non-critical path → pass. The entire
+//     read-only console (Dashboard, Map, Stations, Stats, Logs, Bulletins
+//     read view), the public JSON feeds, /static, /healthz, /readyz, and
+//     /logout all work over plain HTTP — no login required.
+//   - HTTP from non-loopback, on a critical path → 307-redirect to HTTPS.
+//     Critical paths are the ones that mutate state, expose private content,
+//     or set authentication state: /settings*, /messages*, /setup*,
+//     /bulletins/save, /bulletins/send, /login (so cookies get Secure).
 //
 // First-run carve-out: until state.SetupComplete=true the gate stands
 // down entirely so a fresh operator can complete onboarding without
@@ -137,16 +170,32 @@ func (s *Server) transportGate(next http.Handler) http.Handler {
 	})
 }
 
-// isCriticalPath reports whether the URL path mutates state or exposes
-// content the operator opted to require HTTPS for (settings forms,
-// private messages, bulletin compose, the wizard). Anything else
-// (read-only views, public health probes, login flow, static assets)
-// is reachable over plain HTTP from the LAN.
+// isCriticalPath reports whether the URL path requires HTTPS:
+//
+//   - /settings*, /messages*, /setup* — mutate config or expose private
+//     content. Always HTTPS.
+//   - /bulletins/save, /bulletins/send — mutating bulletin subscription
+//     list + outbound bulletin TX. (The read-only /bulletins page itself
+//     is public over both HTTP and HTTPS — bulletins are broadcasts.)
+//   - /login — the form post that issues the session cookie must run
+//     over TLS so the cookie picks up Secure. Without this, the cookie
+//     issued on HTTP would lack Secure and a same-origin downgrade
+//     attack could exfiltrate it.
+//
+// Everything else (read-only console pages, /api/* JSON for the public
+// pages, /static, /healthz, /readyz, /logout, /favicon.ico) is reachable
+// over plain HTTP from the LAN.
 func isCriticalPath(p string) bool {
-	return strings.HasPrefix(p, "/settings") ||
-		strings.HasPrefix(p, "/messages") ||
-		strings.HasPrefix(p, "/bulletins") ||
-		strings.HasPrefix(p, "/setup")
+	switch {
+	case strings.HasPrefix(p, "/settings"),
+		strings.HasPrefix(p, "/messages"),
+		strings.HasPrefix(p, "/setup"),
+		strings.HasPrefix(p, "/bulletins/save"),
+		strings.HasPrefix(p, "/bulletins/send"),
+		p == "/login":
+		return true
+	}
+	return false
 }
 
 // isLoopback reports whether the request originated from 127.0.0.0/8 or ::1.
@@ -213,10 +262,26 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	theme := s.state.Snapshot().Theme
+	// Pull nav-visibility flags from common() so the login page renders
+	// the same top bar as the rest of the site (in particular, a "Sign
+	// in" link on the right instead of "Sign out"). Override Authed to
+	// false explicitly — even if the operator already has a valid
+	// cookie, the login page should present as unauthed (they're seeing
+	// the login form, after all).
+	render := func(extra map[string]any) {
+		data := s.common("Sign in", r)
+		data["Authed"] = false
+		data["ShowMenuSignIn"] = true
+		data["ShowMenuSettings"] = false
+		data["ShowMenuMessages"] = false
+		for k, v := range extra {
+			data[k] = v
+		}
+		s.render(w, "login.html", data)
+	}
 	switch r.Method {
 	case http.MethodGet:
-		s.render(w, "login.html", map[string]any{"Title": "Sign in", "Authed": false, "Theme": theme, "Next": r.URL.Query().Get("next")})
+		render(map[string]any{"Next": r.URL.Query().Get("next")})
 	case http.MethodPost:
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "bad form", http.StatusBadRequest)
@@ -225,7 +290,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		ip := clientIP(r)
 		if !s.loginLimit.Allow(ip) {
 			w.WriteHeader(http.StatusTooManyRequests)
-			s.render(w, "login.html", map[string]any{"Title": "Sign in", "Authed": false, "Theme": theme, "Error": "Too many attempts. Try again in 10 minutes.", "Next": r.FormValue("next")})
+			render(map[string]any{"Error": "Too many attempts. Try again in 10 minutes.", "Next": r.FormValue("next")})
 			return
 		}
 		user := r.FormValue("user")
@@ -233,7 +298,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		if !s.auth.Check(user, pass) {
 			s.loginLimit.Fail(ip)
 			w.WriteHeader(http.StatusUnauthorized)
-			s.render(w, "login.html", map[string]any{"Title": "Sign in", "Authed": false, "Theme": theme, "Error": "Invalid credentials", "Next": r.FormValue("next")})
+			render(map[string]any{"Error": "Invalid credentials", "Next": r.FormValue("next")})
 			return
 		}
 		s.loginLimit.Success(ip)

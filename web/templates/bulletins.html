@@ -20,7 +20,7 @@
     and restart aprgo to undo.
   </div>
   {{end}}
-  {{if and (not .Lockdown.DisableBulletins) (eq (printf "%s" .St.Mode) "advanced") .St.AllowSendBulletins .St.TXEnable}}
+  {{if and .Authed .IsHTTPS (not .Lockdown.DisableBulletins) (eq (printf "%s" .St.Mode) "advanced") .St.AllowSendBulletins .St.TXEnable}}
   <details class="bulletins-compose">
     <summary>📡 Send a bulletin</summary>
     {{if and (not .RFConnected) (not .ISConnected)}}
@@ -142,7 +142,7 @@
   {{end}}
 
   {{/* ── Subscription settings ── */}}
-  {{if not .Lockdown.DisableBulletins}}
+  {{if and .Authed .IsHTTPS (not .Lockdown.DisableBulletins)}}
   <details class="bulletins-settings" {{if .View.GroupList}}open{{end}}>
     <summary>Subscription</summary>
     <form method="POST" action="/bulletins/save" class="bulletins-form">
