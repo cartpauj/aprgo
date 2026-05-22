@@ -1,0 +1,149 @@
+# Release workflow — triggered when a tag matching v* is pushed.
+#
+# Builds aprgo for five Linux CPU architectures, packages each as a .deb
+# (and four of them as .rpm — Pi Zero / ARMv6 has no realistic RPM
+# target), and uploads everything to the GitHub Release page for the tag.
+#
+# To cut a release locally:
+#   git tag v1.0.0
+#   git push origin v1.0.0
+#
+# That's it. No artifacts to upload by hand.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # needed to create the release + upload assets
+
+jobs:
+  build:
+    name: ${{ matrix.target.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          # name        Go GOARCH/GOARM         Debian arch    RPM arch?
+          - { name: "amd64",     goarch: "amd64", goarm: "",  deb_arch: "amd64",     rpm_arch: "x86_64"   }
+          - { name: "arm64",     goarch: "arm64", goarm: "",  deb_arch: "arm64",     rpm_arch: "aarch64"  }
+          - { name: "armv7",     goarch: "arm",   goarm: "7", deb_arch: "armhf",     rpm_arch: "armv7hl"  }
+          - { name: "armv6",     goarch: "arm",   goarm: "6", deb_arch: "armhf-v6",  rpm_arch: ""         }
+          - { name: "i386",      goarch: "386",   goarm: "",  deb_arch: "i386",      rpm_arch: "i686"     }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+
+      - name: Resolve version
+        id: ver
+        run: |
+          # Strip the leading v from the tag → "v1.2.3" → "1.2.3".
+          # Package metadata wants the numeric version.
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}"     >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build aprgo (${{ matrix.target.name }})
+        env:
+          CGO_ENABLED: 0
+          GOOS:        linux
+          GOARCH:      ${{ matrix.target.goarch }}
+          GOARM:       ${{ matrix.target.goarm }}
+        run: |
+          mkdir -p out
+          go build \
+            -ldflags="-s -w -X main.Version=${{ steps.ver.outputs.tag }}" \
+            -trimpath \
+            -o out/aprgo \
+            ./cmd/aprgo
+          ls -la out/
+
+      - name: Install nfpm
+        run: |
+          curl -fsSL https://github.com/goreleaser/nfpm/releases/download/v2.41.3/nfpm_2.41.3_Linux_x86_64.tar.gz \
+            | tar -xz -C /tmp nfpm
+          sudo install -m 0755 /tmp/nfpm /usr/local/bin/nfpm
+          nfpm --version
+
+      - name: Build .deb
+        env:
+          VERSION:   ${{ steps.ver.outputs.version }}
+          ARCH:      ${{ matrix.target.deb_arch }}
+          GO_BINARY: out/aprgo
+        run: |
+          nfpm pkg --packager deb --target out/ --config deploy/nfpm.yaml
+          ls -la out/
+
+      - name: Build .rpm
+        if: matrix.target.rpm_arch != ''
+        env:
+          VERSION:   ${{ steps.ver.outputs.version }}
+          ARCH:      ${{ matrix.target.rpm_arch }}
+          GO_BINARY: out/aprgo
+        run: |
+          nfpm pkg --packager rpm --target out/ --config deploy/nfpm.yaml
+          ls -la out/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aprgo-${{ matrix.target.name }}
+          path: out/aprgo_*.deb
+          if-no-files-found: error
+
+      - name: Upload RPM artifact
+        if: matrix.target.rpm_arch != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: aprgo-${{ matrix.target.name }}-rpm
+          path: out/aprgo-*.rpm
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write       # attestations
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@v4   # for release notes from CHANGELOG/README if we want
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List release files
+        run: ls -la dist/
+
+      - name: Attest provenance
+        # Native GitHub attestation — proves these artifacts came from
+        # this exact workflow run on this commit. No GPG key to manage.
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'dist/aprgo_*.deb dist/aprgo-*.rpm'
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: aprgo ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/aprgo_*.deb
+            dist/aprgo-*.rpm

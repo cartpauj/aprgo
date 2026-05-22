@@ -1,0 +1,73 @@
+# nfpm config — produces .deb and .rpm packages for aprgo.
+#
+# CI (.github/workflows/release.yml) supplies:
+#   VERSION    — e.g. "1.0.0" (the git tag minus the leading "v")
+#   ARCH       — Debian arch name: amd64, arm64, armhf, armhf-v6, i386
+#   GO_BINARY  — path to the pre-built static aprgo binary for that arch
+#
+# Run as:  nfpm pkg --packager deb --target out/ --config deploy/nfpm.yaml
+#          nfpm pkg --packager rpm --target out/ --config deploy/nfpm.yaml
+
+name: aprgo
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: hamradio
+priority: optional
+maintainer: cartpauj <cartpauj@caseproof.com>
+description: |
+  APRS iGate, digipeater, and operator web console in a single Go binary.
+  One process owns the TNC, talks to APRS-IS, makes gating decisions,
+  runs beacons, and serves the operator console — no separate daemon,
+  no log tailing, no IPC. Supports KISS TNCs over serial, Bluetooth,
+  or TCP.
+homepage: https://github.com/cartpauj/aprgo
+license: MIT
+
+# Soft dependencies. The aprgo binary itself is fully static (no shared-lib
+# deps), so nothing is strictly Required. Bluez is needed only for
+# Bluetooth TNCs; direwolf only for soundcard setups. Recommends installs
+# them by default on apt/dnf unless the operator opted out.
+recommends:
+  - bluez
+  - bluez-tools
+  - direwolf
+
+contents:
+  - src: ${GO_BINARY}
+    dst: /usr/bin/aprgo
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
+  - src: deploy/aprgo.service
+    dst: /lib/systemd/system/aprgo.service
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
+scripts:
+  postinstall: deploy/postinst.sh
+  preremove:   deploy/prerm.sh
+  postremove:  deploy/postrm.sh
+
+overrides:
+  rpm:
+    # RPM uses /usr/lib/systemd/system, not /lib/systemd/system. nfpm handles
+    # the path remap if the dst is /lib/systemd/system — but we set it
+    # explicitly here for clarity.
+    contents:
+      - src: ${GO_BINARY}
+        dst: /usr/bin/aprgo
+        file_info:
+          mode: 0755
+          owner: root
+          group: root
+      - src: deploy/aprgo.service
+        dst: /usr/lib/systemd/system/aprgo.service
+        file_info:
+          mode: 0644
+          owner: root
+          group: root

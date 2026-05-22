@@ -1,270 +1,57 @@
-# aprgo
+# aprgo — Self-Hosted APRS Suite
 
-A self-contained APRS iGate, digipeater, and operator console in a single Go binary.
+A self-hosted APRS suite in a single Go binary: **iGate**, **digipeater**, **operator console**, **map**, **messaging**, **bulletins**, and a complete admin web UI — one process, one config dir, no sidecars.
 
-One process owns the TNC, talks to APRS-IS, makes gating decisions, runs beacons, and serves the operator web console — no separate daemon, no log tailing, no IPC.
+One binary owns the TNC (serial / Bluetooth / TCP-KISS), speaks to APRS-IS, makes gating + digipeat decisions, runs your beacons, stores history in SQLite, and serves the whole operator console over HTTPS. Designed to run unattended on a Raspberry Pi, a Wyse thin client, or anything else that runs Linux.
 
 **Status:** Alpha. Running stably on Debian 12 + a Mobilinkd TNC3.
 
-> **New to APRS?** APRS is the ham radio digital data network for position reports, short messages, weather telemetry, and emergency comms over VHF. An **iGate** is a station that bridges radio traffic to the internet (APRS-IS) and back. A **digipeater** is a station that retransmits packets so they reach further than a single hop. aprgo can be either, or both.
+> **New to APRS?** APRS is the ham radio digital data network for position reports, short messages, weather telemetry, and emergency comms over VHF. An **iGate** is a station that bridges radio traffic to the internet (APRS-IS) and back. A **digipeater** is a station that retransmits packets so they reach further than a single hop. aprgo can be either, or both, or neither — it also runs as an APRS-IS-only client.
 
 ---
 
-# For operators
+## Install
 
-## Quick start (Debian / Ubuntu)
-
-```bash
-# 1. Build (Go 1.26+ required)
-git clone https://github.com/cartpauj/aprgo
-cd aprgo
-CGO_ENABLED=0 go build \
-  -ldflags="-s -w -X main.Version=$(git describe --tags --always)" \
-  -trimpath -o aprgo ./cmd/aprgo
-
-# 2. Install
-sudo apt install bluez bluez-tools     # only if you'll use a Bluetooth TNC
-sudo ./deploy/install.sh ./aprgo
-sudo systemctl start aprgo
-
-# 3. Open the console
-# http://<host>:14473/    user: admin   pass: admin  (change immediately)
-#
-# After first-run setup completes, aprgo redirects all non-loopback HTTP to
-# https://<host>:14439/ — the operator console is HTTPS-only post-setup.
-# The cert is self-signed; your browser will warn once. Click through.
-```
-
-Cross-compile for Raspberry Pi (arm64):
+One-line installer for any supported Linux box:
 
 ```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -trimpath -o aprgo-arm64 ./cmd/aprgo
+curl -fsSL https://raw.githubusercontent.com/cartpauj/aprgo/main/get.sh | sudo sh
 ```
 
-Pure-Go SQLite means no C toolchain required for cross-builds.
+Detects your distro family and CPU arch, pulls the matching `.deb` or `.rpm` from the latest GitHub release, installs it (with `bluez` / `bluez-tools` / `direwolf` as recommended dependencies), and prints how to reach the console.
 
-## First-run wizard
+### Supported prebuilt platforms
 
-Open `http://<host>:14439/` after install and a setup wizard intercepts. Each step pre-fills sensible defaults; you can change everything later under **Settings**.
+| Architecture | `.deb` | `.rpm` | Typical hardware |
+|---|---|---|---|
+| `amd64` / `x86_64` | ✓ | ✓ | Modern x86 servers, PCs, **Wyse 3040 / 5070**, Intel NUC, cloud VPS |
+| `arm64` / `aarch64` | ✓ | ✓ | **Pi 3 (64-bit OS), Pi 4, Pi 5, Pi Zero 2 W**, AWS Graviton, ARM SBCs |
+| `armhf` (ARMv7) | ✓ | ✓ | **Pi 2, Pi 3 / 4 on 32-bit RPi OS**, BeagleBone Black |
+| `armhf-v6` (ARMv6) | ✓ | — | **Pi 1, Pi Zero, Pi Zero W** |
+| `i386` / `i686` | ✓ | ✓ | Old 32-bit x86 thin clients (Wyse 3010-class Atom), netbooks |
 
-| Step | What you set | Notes |
+aprgo's first-class operating system is **Linux with systemd**. macOS, Windows, and *BSD aren't supported — the Bluetooth pairing path uses BlueZ (Linux-only) and the install wires up a systemd unit.
+
+For systems / architectures not in the table above, [build from source](#building-from-source) — aprgo is pure Go with no CGO.
+
+### Reaching the console after install
+
+After `sudo systemctl start aprgo`, the console is on two ports:
+
+| Port | URL | Use |
 |---|---|---|
-| **Identity** | Callsign-SSID (e.g. `N0CALL-10`) + APRS-IS passcode | Generate the passcode at [apps.magicbug.co.uk/passcode](https://apps.magicbug.co.uk/passcode/). Passcode is tied to the *base* callsign — `N0CALL-10` and `N0CALL-1` share the same number. Use `-1` to listen without ever uploading to APRS-IS. |
-| **Location** | Click the map (or type lat/lon) + APRS-IS filter radius (km) | Position is used for the map view and to scope the APRS-IS firehose to your area. 150 km is a sensible default. |
-| **TNC** | Pick: detected serial device, paired Bluetooth, or TCP host:port | Bluetooth section auto-discovers paired TNCs and offers a Scan button for new ones. TCP path is for Direwolf or any networked KISS server. |
-| **Mode** | Pick one of seven operating modes | See [Modes](#operating-modes) below. RX-only is the safest first run. |
-| **Flags** *(Advanced only)* | TX enable, RF↔IS gating flags, digi flags, viscous delay, etc. | This step only appears if you picked Advanced mode. The other modes set the flags automatically. |
-| **Beacon** | Comment + interval (min 10 minutes) | Skipped automatically in RX-only mode. |
-| **Done** | Summary | Click "Go to dashboard" to start. |
+| **14473** (HTTP) | `http://<host>:14473/` | Read-only browsing (Dashboard, Map, Stations, Stats, Logs) + first-run setup wizard |
+| **14439** (HTTPS) | `https://<host>:14439/` | Full access. Self-signed cert — accept the browser warning once |
 
-You can re-run any individual step later — Settings has **Change location…**, **Change TNC…**, **Switch mode…** buttons that drop you back into the relevant wizard step without redoing the others.
+Default login is `admin` / `admin`. Change it on first sign-in.
 
-## Operating modes
-
-Pick the role that matches what you want your station to do.
-
-| Mode | Best when… |
-|---|---|
-| **RX-only iGate** | First run, or you don't have a transmit-licensed setup yet. Listens on RF, forwards to APRS-IS, never transmits. Use passcode `-1`. |
-| **TX iGate** | You want to gate RF↔IS *and* relay APRS-IS messages back to stations you've heard recently on the air. No digipeating. |
-| **Fill-in digipeater + iGate** *(recommended for most home iGates)* | You want to fill coverage gaps for low-altitude stations near you. Repeats `WIDE1-1` only (the "I need a fill-in" path), with a viscous delay so you defer to higher digis. Also gates to IS. |
-| **Full digipeater** | **Mountaintop sites only.** Repeats both `WIDE1-1` and `WIDE2-N`. A low-elevation full digi clogs the channel and gets you talked to by your local APRS coordinator. |
-| **Messaging-only iGate** | Your area already has plenty of iGates and you don't want to add channel noise. Bridges person-to-person messages and acks only, skipping beacons / weather / telemetry. Lowest TX duty cycle. |
-| **Off-grid digipeater** | EMCOMM field-day, mountaintop with no internet, or any standalone RF relay. Pure RF, no APRS-IS connection at all. |
-| **Advanced / Custom** | You know APRS intimately. Skip the presets — manage each gating + digipeating flag yourself. |
-
-Switching modes via Settings → **Switch mode** sets the underlying flags for you. If you want to fine-tune later, pick Advanced and adjust individual flags.
-
-## Console tour
-
-Once setup is done, the navigation has these pages:
-
-- **Dashboard (Live)** — Top-down stream of packets as they arrive, color-coded by origin (RF / IS / your own TX). Filter chips switch between all, RF only, IS only, TX only. Click any callsign to open its station detail.
-- **Map** — Leaflet map showing heard stations in your selected time window (30 min – 3 days). Click a marker to focus on one station's trail. Includes your own filter-radius ring when an APRS-IS filter is active.
-- **Messages** — Two-pane chat view. Conversations on the left, thread on the right. Auto-acks messages addressed to your station; out-of-band acks for messages you've sent are tracked and the retry queue resends up to five times.
-- **Stations** — Table of every callsign your iGate has decoded, with search across callsign / comment / message bodies. Time-window chips for "heard in the last X minutes / hours / days."
-- **Diagnostics** — Live ring buffer of packets that were *dropped* and why (rate-limited source, malformed, filtered out, etc.). Helpful when traffic looks lower than expected.
-- **Settings** — All configuration in one place: identity, position, mode, gating flags, TNC, APRS-IS server (region dropdown), beacons, retention. Inline `(i)` bubbles explain each field.
-
-## Hardware compatibility
-
-| TNC | Connection | Notes |
-|---|---|---|
-| Mobilinkd TNC3 | Bluetooth Classic (RFCOMM) | Wizard handles pair + bind + supervisor |
-| Mobilinkd TNC4 | Bluetooth Classic or WiFi/TCP KISS | Dual-mode |
-| Kenwood TH-D74 / TH-D75A | USB serial or Bluetooth | KISS mode |
-| Kenwood TM-D710G / TM-D750A | USB serial via cable | Built-in TNC |
-| NinoTNC | USB serial | Popular DIY |
-| TNC-Pi / TNC-X (discontinued) | USB serial or Pi GPIO | Huge installed base |
-| MFJ-1270X | USB serial | KISS mode |
-| ESP32 KISS TNC | USB CDC-ACM at 115200 baud | DIY |
-| VR-N76 handheld | USB serial or Bluetooth | Built-in KISS |
-| **Soundcard** (Digirig, SignaLink USB, DRAWS, UDRC, DMK URI, RA-35, DINAH, SHARI, etc.) | Run [Direwolf](https://github.com/wb2osz/direwolf) on the same box | aprgo connects to Direwolf's TCP KISS port (default `localhost:8001`) |
-| Any networked KISS source ([Direwolf](https://github.com/wb2osz/direwolf), [tnc-server](https://github.com/chrissnell/tnc-server), kissnetd) | TCP KISS | Wizard's "Network (TCP KISS)" option |
-
-**What about audio / PTT?** aprgo does not do audio or PTT — it speaks KISS to *something else* that owns the modem. For hardware TNCs that's the TNC. For soundcard setups, that's Direwolf (which supports CM108-HID, GPIO, serial DTR/RTS, hamlib, VOX — every PTT mechanism you'd want). See the project memory or Direwolf's docs for setup specifics.
-
-## Security model
-
-aprgo serves the console over **HTTPS by default** with a self-signed cert generated on first start. It listens on two ports:
-
-| Port | Scheme | Purpose |
-|---|---|---|
-| **14473** | HTTP | Redirects everything to HTTPS once setup is complete. `/healthz` and `/readyz` stay plain so monitors don't need TLS. |
-| **14439** | HTTPS | The operator console. Self-signed cert — your browser warns once, then remembers. |
-
-The two ports double as a `144.39 MHz` reference (HTTPS) and the `:443`-flavoured HTTP redirect port (`14473`).
-
-**First-run carve-out.** Until the setup wizard completes, the HTTP port stays fully open so a new operator can finish onboarding without first wrestling with a cert warning. The moment the wizard's "Done" step commits, the transport gate engages and non-loopback HTTP starts redirecting.
-
-**Operator credentials + lockdown** live in `/var/lib/aprgo/aprgo.conf` (mode 0600). Settings → Account is the UI that writes that file: username (`[a-z0-9_-]`), bcrypt password, session HMAC key, and a set of hardening checkboxes. Once you enable a lockdown flag, the corresponding handler returns 403 — and the *only* way to undo it is to edit `aprgo.conf` on the box and restart aprgo. That's the deliberate recovery path; there is no web-side override, because that would defeat the threat model.
-
-Hardening checkboxes:
-
-- **Lock settings** — Settings page (and the wizard) become read-only.
-- **Disable messaging** — Send / cancel / retry message handlers refuse.
-- **Disable bulletins** — Bulletin compose, send, and subscription-edit handlers all refuse.
-- **Lock everything** — Master view-only mode (implies all of the above).
-
-Other invariants:
-
-- aprgo runs as `root` (required for `rfcomm` + `bluetoothctl`) with systemd hardening (`ProtectSystem=strict`, `NoNewPrivileges`, `LockPersonality`, `MemoryDenyWriteExecute`, restricted address families and capabilities).
-- APRS-IS passcode is stored plaintext in `/var/lib/aprgo/state.json` (mode 0600). Protocol limitation — the IS server needs the cleartext value.
-- Default web login is `admin` / `admin`. **Change it immediately on first login** — the dashboard banner reminds you.
-- Web UI has CSRF (token + Origin check + `SameSite=Strict`), session HMAC, per-IP login rate limiting, and password-change session invalidation.
-- Self-signed TLS protects the LAN segment from passive sniffing. **It does not protect against a determined attacker on the path** — there's no chain of trust. For public-internet exposure, run aprgo behind Caddy / nginx with a real cert, or front it with Tailscale (which issues `*.ts.net` certs for free).
-
-### Regenerating the cert
-
-If you move the box to a new hostname, restart with `--regen-tls`:
-
-```bash
-sudo /usr/local/bin/aprgo --regen-tls   # one-shot regen, then restart normally
-```
-
-Or just remove `/var/lib/aprgo/tls/` and restart — aprgo regenerates on the next boot. The fingerprint is logged on every start so you can verify it out-of-band over SSH.
-
-### The config file: `/var/lib/aprgo/aprgo.conf`
-
-JSON, mode `0600`, owned root. Created on first start with default `admin/admin` + a fresh random session key. Every field:
-
-```json
-{
-  "username":      "admin",
-  "password_hash": "$2a$10$…",
-  "session_key":   "<base64>",
-  "lockdown": {
-    "lock_settings":     false,
-    "disable_messaging": false,
-    "disable_bulletins": false,
-    "lock_all":          false
-  }
-}
-```
-
-| Field | What it is | How to change it from the CLI |
-|---|---|---|
-| `username` | The single admin account name. `[a-z0-9_-]{1,32}`. | Edit the string. |
-| `password_hash` | bcrypt hash of the password. | `sudo aprgo --set-password 'your-new-password'` writes the hash directly into `aprgo.conf`. Restart aprgo afterwards. |
-| `session_key` | 32-byte HMAC key, base64-encoded. Signs session cookies and CSRF tokens. **Don't share this** — anyone who has it can forge sessions. To rotate after a suspected compromise, **blank the field** (`"session_key": ""`) and restart aprgo — a fresh key is minted and persisted automatically. Every existing session is invalidated. |
-| `lockdown.*` | The UI hardening flags. Flip any to `true` to enable, back to `false` to undo. Restart aprgo for the change to take effect. |
-
-### Recovering from a lockout
-
-```bash
-sudo systemctl stop aprgo
-sudo nano /var/lib/aprgo/aprgo.conf        # flip "lockdown" flags to false
-sudo systemctl start aprgo
-```
-
-If you've also forgotten the password:
-
-```bash
-sudo systemctl stop aprgo
-# Single quotes so the shell doesn't interpret special characters.
-# Prefix the command with a space if HISTCONTROL=ignorespace is set on
-# your shell, otherwise the new password lands in shell history.
- sudo aprgo --set-password 'your-new-password'
-sudo systemctl start aprgo
-```
-
-`--set-password` writes the new bcrypt hash directly into `aprgo.conf` and exits — no manual JSON editing required.
-
-## Files
-
-- `/usr/local/bin/aprgo` — the binary
-- `/etc/systemd/system/aprgo.service` — service unit
-- `/var/lib/aprgo/state.json` — operating config (callsign, passcode, location, beacon text, gating flags)
-- `/var/lib/aprgo/aprgo.conf` — credentials + lockdown flags (mode 0600). Edit this to recover from a UI lockout.
-- `/var/lib/aprgo/tls/{cert.pem,key.pem}` — self-signed TLS material (key mode 0600)
-- `/var/lib/aprgo/db.sqlite[-wal,-shm]` — SQLite store (heard stations, packets, messages)
-
-## Day-2 operations
-
-### Logs
-
-```bash
-journalctl -u aprgo          # all
-journalctl -u aprgo -f       # follow
-journalctl -u aprgo --since '1 hour ago'
-```
-
-### Backup
-
-```bash
-sudo systemctl stop aprgo
-sudo cp /var/lib/aprgo/state.json     ~/aprgo-state-$(date +%F).json
-sudo cp /var/lib/aprgo/aprgo.conf     ~/aprgo-conf-$(date +%F).conf
-sudo cp /var/lib/aprgo/db.sqlite      ~/aprgo-db-$(date +%F).sqlite
-sudo cp -a /var/lib/aprgo/tls         ~/aprgo-tls-$(date +%F)
-sudo systemctl start aprgo
-```
-
-### Upgrade
-
-```bash
-sudo systemctl stop aprgo
-sudo install -m 0755 ./aprgo /usr/local/bin/aprgo
-sudo systemctl start aprgo
-```
-
-`state.json` is forward-compatible (new fields are added with sensible defaults on first read). DB schema migrations between phases may require deleting `/var/lib/aprgo/db.sqlite*` until a migrations table is added — back it up first if you want to keep packet history.
-
-### Uninstall
-
-```bash
-sudo systemctl disable --now aprgo
-sudo rm /usr/local/bin/aprgo
-sudo rm /etc/systemd/system/aprgo.service
-sudo rm -rf /var/lib/aprgo      # WARNING: deletes config + DB
-```
-
-## Troubleshooting
-
-**TNC won't connect:**
-- USB: check `ls /dev/ttyUSB* /dev/ttyACM*` — does the device exist? Can the `aprgo` process (root) open it?
-- Bluetooth: check pairing with `sudo bluetoothctl paired-devices`; verify `bluez` and `bluez-tools` are installed (`apt install bluez bluez-tools`). The settings page surfaces the last error.
-- TCP: confirm Direwolf / tnc-server is running on the configured host:port (`ss -ltn | grep 8001`).
-
-**APRS-IS rejected your passcode (red banner on Settings):**
-- Your passcode doesn't match your callsign. Generate the right one at [apps.magicbug.co.uk/passcode](https://apps.magicbug.co.uk/passcode/) — use your base callsign with no SSID. Paste it into Settings and save.
-- aprgo will still appear "connected" but the server silently drops (qAX's) every packet you send.
-
-**APRS-IS won't connect at all:**
-- Network: confirm outbound TCP 14580 is open. `nc -zv noam.aprs2.net 14580`.
-- Regional latency: pick a closer server from the Settings → APRS-IS dropdown (Europe → `euro.aprs2.net`, Oceania → `aunz.aprs2.net`, etc.).
-
-**No packets received (dashboard stays empty):**
-- The TNC may be connected but failing to decode (squelch closed, wrong band, deviation off). For soundcard setups, tune Direwolf's audio levels first.
-- Verify the TNC is actually in KISS mode — some radios boot into command mode and need an explicit KISS-enter command sent by their config tool.
-
-**Wrong passcode confusion:**
-- Passcode is callsign-specific (without SSID). `N0CALL-10` and `N0CALL-1` share the same passcode.
-- `-1` means "RX-only at the server level" — uploads will be rejected; IS-side will work as a listener.
+User documentation (operating modes, hardware compatibility, security hardening, troubleshooting, day-2 operations) will live in the project wiki.
 
 ---
 
 # For developers
+
+The rest of this README is contributor-focused.
 
 ## Architecture
 
@@ -293,7 +80,6 @@ sudo rm -rf /var/lib/aprgo      # WARNING: deletes config + DB
         │   • Viscous delay                    │
         │   • Preemptive digipeat (MARK)       │
         │   • Source rate-limit                │
-        │   ~37 unit tests                     │
         └──────────────┬───────────────────────┘
                        │
         ┌──────────────┼───────────────┬─────────────┐
@@ -319,43 +105,58 @@ sudo rm -rf /var/lib/aprgo      # WARNING: deletes config + DB
 | `internal/gate` | Gating + digipeat decision tree. Pure functions only — caller executes returned actions | ✓ | 21 |
 | `internal/bus` | In-memory pub/sub fanout (Frames, Packets) | ✓ | — |
 | `internal/state` | Persistent JSON config + live-reload subscribers. Atomic writes with directory fsync | — | partial |
+| `internal/config` | Credentials + lockdown flags (`aprgo.conf`). Bcrypt password, HMAC session key, ratcheted UI lockdown switches | — | — |
+| `internal/tlscert` | Load-or-generate self-signed ECDSA P-256 cert under `/var/lib/aprgo/tls/` | — | — |
 | `internal/store` | SQLite store (stations, packets, messages). Pure-Go `modernc.org/sqlite`. Pragmas tuned for SD-card deploys | — | — |
 | `internal/auth` | Cookie session (HMAC) + bcrypt password + per-IP login rate limit | — | — |
 | `internal/igate` | APRS-IS client: connect, login, filter, logresp parsing, auto-reconnect | — | — |
 | `internal/rf` | KISS reader/writer for serial / Bluetooth / TCP behind one `io.ReadWriteCloser`. Includes `btbind` rfcomm supervisor | — | — |
-| `internal/btle` | BLE-KISS GATT client (kept around but not active path; see "Deferred non-features") | — | — |
 | `internal/tnc` | BlueZ subprocess wrappers — scan / pair / SDP / rfcomm | — | — |
 | `internal/beacon` | Per-beacon periodic scheduler with jitter | — | — |
-| `internal/server` | HTTP routes, wizard, SSE-style polling, rate limiters, CSRF, sanitizers — the orchestrator | — | — |
-| `cmd/aprgo` | Binary entry + `main` | — | — |
+| `internal/server` | HTTP routes, wizard, polling feed, rate limiters, CSRF, transport gate (HTTP→HTTPS), lockdown enforcement — the orchestrator | — | — |
+| `cmd/aprgo` | Binary entry + `main` (also `--set-password`, `--regen-tls`, `--version`) | — | — |
 | `cmd/trailcheck` | Aux dev tool | — | — |
 
 The "Pure?" column matters: pure packages have no I/O and are unit-testable in isolation. **All decision logic that affects the on-air behavior of the station lives in `internal/gate/`** and is exhaustively tested. Effectful packages (`rf`, `igate`, `beacon`, `store`, `server`) own the side effects.
 
-## Build / test / cross-compile
+## Building from source
 
 ```bash
-# Build (Go 1.26+)
-CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o aprgo ./cmd/aprgo
+# Go 1.26+ required. Pure-Go build, no CGO, no C toolchain needed.
+git clone https://github.com/cartpauj/aprgo
+cd aprgo
+CGO_ENABLED=0 go build \
+  -ldflags="-s -w -X main.Version=$(git describe --tags --always)" \
+  -trimpath -o aprgo ./cmd/aprgo
 
-# Tests (~37 across gate, aprs, state)
+# Tests (gate + aprs + state + server passcode helper).
 go test ./...
 
-# Cross-compile to arm64 (Raspberry Pi)
+# Cross-compile to arm64 (Raspberry Pi 3/4/5/Zero 2 W):
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -trimpath -o aprgo-arm64 ./cmd/aprgo
 ```
 
 No CGO anywhere — `modernc.org/sqlite` is pure-Go, `golang.org/x/crypto` is pure-Go. Cross-compile needs no C toolchain. The shipped binary is one static file.
+
+### Installing a locally-built binary on the host
+
+```bash
+sudo ./deploy/install.sh ./aprgo
+sudo systemctl start aprgo
+```
+
+`deploy/install.sh` lays out `/var/lib/aprgo/` (mode 0700), installs the binary to `/usr/bin/aprgo`, installs the systemd unit, and enables it.
 
 ## Key invariants (please preserve)
 
 1. **Single-process design.** No IPC, no helper daemons. The one allowed external is Direwolf, which aprgo connects to over TCP KISS just like any other networked TNC. Don't grow IPC mechanisms — if you find yourself wanting a sidecar process, find another path.
 2. **`internal/gate/` is pure.** All on-air decisions are pure functions taking `(packet, state, heardChecker callback) → []Action`. No I/O, no timers, no logging from inside `gate`. Caller executes actions. If you need to change digipeat policy, the change goes in `gate.go` and gets unit tests in `gate_test.go`.
 3. **All goroutines have panic recovery.** `internal/server` spawns long-running workers wrapped in `defer recover()`. Add new goroutines using the same pattern — a panic in one component must not take down the process.
-4. **`state.json` is forward-compatible.** New fields default to zero on read so older clients can still parse newer files. Atomic write via temp file + rename + directory fsync.
+4. **`state.json` is forward-compatible.** New fields default to zero on read so older clients can still parse newer files. Atomic write via temp file + rename + directory fsync. Same pattern for `aprgo.conf` and the TLS material.
 5. **HTTP UI is polling, not SSE.** Dashboard polls `/api/feed?since=N` every 2.5 s. SSE was deliberately reverted (NAT/proxy timeouts). Don't reintroduce SSE without a real reason.
 6. **TX inter-frame spacing.** `rf.writeLoop` enforces a 1-second minimum gap between successive RF writes (`internal/rf/rf.go`). APRS channel courtesy. Don't remove.
 7. **Heard-stations table excludes our own callsign.** Digipeated copies of our own beacons would otherwise pollute that list. The intake path checks for self before insert.
+8. **Lockdown ratchet.** UI lockdown flags in `aprgo.conf` can only flip OFF→ON via the web UI. The handler `OR`s any incoming form value against the existing raw value so a hand-crafted POST can never clear a locked flag — the only way back is editing `aprgo.conf` and restarting.
 
 ## Where to make common changes
 
@@ -365,10 +166,11 @@ No CGO anywhere — `modernc.org/sqlite` is pure-Go, `golang.org/x/crypto` is pu
 | Add a new operating mode | `internal/state/state.go` (Mode enum + `applyModeDefaults`), `internal/server/wizard.go` (step copy), `web/templates/setup.html` (radio card). |
 | Add a wizard step | `internal/server/wizard.go` (add to `wizardSteps`, add save case, add to renderStep extras), `web/templates/setup.html` (define the step template + dispatch in main switch). |
 | Add a gating / digipeat rule | `internal/gate/gate.go` (function + state flag if user-tunable). Always pair with unit tests in `gate_test.go`. |
-| Add an HTTP endpoint | `internal/server/routes.go` (HandleFunc) + handler. Templates in `web/templates/`. |
-| Add a persistent setting | `internal/state/state.go` (struct field), Settings UI in `web/templates/settings.html`, save case in `internal/server/settings.go`. |
+| Add an HTTP endpoint | `internal/server/routes.go` (HandleFunc) + handler. Templates in `web/templates/`. Add to the transport gate's `isCriticalPath()` allowlist if it mutates state. |
+| Add a persistent setting | `internal/state/state.go` (struct field), Settings UI in `web/templates/settings.html`, save case in `internal/server/routes.go handleSettingsSave`. |
 | Add a TNC transport | `internal/state/state.go` (TNCKind enum), `internal/rf/rf.go` (open/dial logic), `web/templates/setup.html` (wizard fieldset). |
 | Add a beacon-style packet | `internal/beacon/beacon.go` (build function) + state schema + Settings UI. |
+| Add a lockdown flag | `internal/config/config.go` (Lockdown struct + Effective()), wire 403 checks in handlers via `s.requireUnlocked`, UI surfaces in `web/templates/settings.html`. |
 
 ## Testing
 
@@ -378,32 +180,48 @@ Strongest coverage where it matters most:
 - `internal/aprs/parsers_test.go` — 15 tests covering weather, PHG, RNG, tocall lookup (exact + wildcard + SSID strip), path parsing (used hops + q-construct).
 - `internal/state/` — config validation tests.
 
-HTTP routes, RF goroutines, and the IS client are exercised by integration testing on the Wyse target rather than unit tests. New code that touches `gate/`, `aprs/`, or `ax25/` should always come with tests — they're the ones operators can't see go wrong on their end.
+HTTP routes, RF goroutines, and the IS client are exercised by integration testing on a real Pi / Wyse target rather than unit tests. New code that touches `gate/`, `aprs/`, or `ax25/` should always come with tests — they're the ones operators can't see go wrong on their end.
 
-## Deployment loop
+## Deployment loop (dev → real target)
 
-Standard dev workflow:
+Standard inner-loop for testing on a real Pi or thin client:
 
 ```bash
-# 1. Build
-CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o /tmp/aprgo-linux ./cmd/aprgo
+# 1. Build for the target arch (arm64 example).
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -trimpath -o /tmp/aprgo-linux ./cmd/aprgo
 
-# 2. scp to target
+# 2. scp to target.
 scp /tmp/aprgo-linux user@host:/tmp/
 
-# 3. Hot-swap
+# 3. Hot-swap.
 ssh user@host '
   sudo systemctl stop aprgo &&
-  sudo install -m 0755 /tmp/aprgo-linux /usr/local/bin/aprgo &&
+  sudo install -m 0755 /tmp/aprgo-linux /usr/bin/aprgo &&
   sudo systemctl start aprgo &&
   sudo systemctl is-active aprgo
 '
 
-# 4. Watch logs
+# 4. Watch logs.
 ssh user@host 'journalctl -u aprgo -f'
 ```
 
-`/var/lib/aprgo/` survives the swap. State.json's forward-compat means schema additions don't break the running config.
+`/var/lib/aprgo/` survives the swap. `state.json` and `aprgo.conf` are forward-compatible — new fields default to zero on read.
+
+## Cutting a release
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+That's it. `.github/workflows/release.yml` builds for all five supported architectures in parallel, runs nfpm to produce 5 `.deb` + 4 `.rpm` files, attests build provenance, and publishes a GitHub Release page with all 9 packages attached. Total wall-clock ~2 minutes.
+
+The version flows from a single source — the git tag — into:
+- the Go binary (`-ldflags="-X main.Version=v1.0.0"`)
+- nfpm package metadata (`VERSION=1.0.0` env)
+- the release page URL + asset filenames
+
+No file in the repo needs editing between tags. To re-do a buggy tag, delete it locally + on the remote, delete the Release page in the GitHub UI, then re-tag.
 
 ## Project layout
 
@@ -416,30 +234,33 @@ internal/
                      message, third-party, tocall, path)
                    data/  embedded aprsorg/aprs-deviceid tocall registry
   bus/             typed pub/sub fanout
-  state/           persistent config + live-reload subscribers
+  state/           persistent operating config (state.json)
+  config/          credentials + lockdown flags (aprgo.conf)
+  tlscert/         self-signed cert load-or-generate
   store/           SQLite stations/packets/messages
   auth/            cookie session (HMAC + password-generation binding)
   igate/           APRS-IS client (reconnect, filter, logresp parsing)
   rf/              KISS reader/writer for serial / Bluetooth / TCP, plus btbind supervisor
-  btle/            BLE-KISS GATT client (retired path)
   tnc/             BlueZ subprocess wrappers (scan / pair / SDP / rfcomm)
   gate/            RF↔IS gating + digipeat decision engine (pure functions)
   beacon/          periodic beacon scheduler
-  server/          HTTP routes, polling feed, wizard, rate limiters, CSRF, sanitizers
-deploy/            systemd unit, install.sh, debian/control skeleton
+  server/          HTTP routes, polling feed, wizard, rate limiters, CSRF, transport gate, lockdown enforcement
+deploy/            systemd unit, install.sh, nfpm.yaml, postinst/prerm/postrm scripts
+.github/workflows/ release.yml — builds .deb/.rpm matrix on v* tags
 web/               embed.FS for templates + static assets
+get.sh             one-line installer (curl|sh) used in the README
 ```
 
 ## Roadmap
 
 See [TODO.md](TODO.md) for the current open work. Top items right now:
+- Browser push notifications (Web Push / VAPID) for incoming messages + bulletins
+- Email notifications over user-defined SMTP
 - Global TX rate cap (per-source rate limit exists; need a global backstop)
 - SSn-N regional digipeat aliases (`ARIZ1-1`, `MASS2-2`, etc.)
 - APRS-IS auth-test wizard step (verify passcode before letting the user proceed)
 - TNC test wizard step (tail the TNC for 5 s and report frame count)
-- `.deb` / `.rpm` / Arch packaging
 - aprx → aprgo migration subcommand
-- GitHub release workflow
 
 ## Deliberately out of scope
 
@@ -451,7 +272,8 @@ These came up in audits but are explicitly punted on — please don't open PRs f
 - **TLS APRS-IS (`:24580`)** — operator can put aprgo behind a reverse proxy if exposing the web UI beyond LAN; APRS-IS plaintext over LAN is the common case.
 - **Bundled Direwolf in `.deb`** — declared as `Recommends`, not `Depends`. Users who need it install it; aprgo doesn't manage child processes.
 - **Automatic offline-mode flip when IS goes down** — paternalistic. The operator chose a mode; aprgo shouldn't silently switch it.
-- **BLE-KISS GATT support** — code is still here for archival but inactive. BlueZ D-Bus quirks made it too fragile on desktop Linux for no benefit over Classic SPP.
+- **BLE-KISS GATT support** — BlueZ D-Bus quirks made it too fragile on desktop Linux for no benefit over Classic SPP.
+- **macOS / Windows builds** — Bluetooth pairing path uses BlueZ subprocess; systemd unit is Linux-specific. Rewriting both would be a meaningful project on its own.
 
 ## License
 

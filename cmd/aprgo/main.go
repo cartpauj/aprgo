@@ -18,8 +18,11 @@ import (
 	"aprgo/internal/server"
 )
 
-// Version is set via -ldflags="-X main.Version=…" at build time.
-var Version = "1.0.0"
+// Version is set via -ldflags="-X main.Version=v1.2.3" at build time by
+// the CI release workflow (.github/workflows/release.yml). The "dev"
+// default only surfaces for un-released local builds — `go run`, plain
+// `go build` without ldflags, etc.
+var Version = "dev"
 
 func main() {
 	// Default ports: 14473 (HTTP) is a digit-shuffle of 14439 that ends in
