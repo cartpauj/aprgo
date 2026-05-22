@@ -3,10 +3,11 @@
 # CI (.github/workflows/release.yml) exports three env vars before running:
 #
 #   VERSION    — e.g. "1.0.0" (git tag minus the leading "v")
-#   ARCH       — Debian arch name: amd64, arm64, armhf (for both ARMv6 + ARMv7
-#                builds — Raspberry Pi OS's armhf is ARMv6-baseline; Debian's
-#                is ARMv7. We ship two .debs both tagged armhf and disambiguate
-#                with the file_name_template suffix below.)
+#   ARCH       — Debian arch name: amd64, arm64, armhf, i386
+#                For ARMv6 (Pi Zero / Pi 1) we ship a SECOND armhf .deb with
+#                a custom filename suffix — the workflow controls the
+#                output name via `--target <path>`, since nfpm's filename
+#                isn't templatable in the config.
 #   GO_BINARY  — path to the pre-built static aprgo binary for that arch
 #
 # nfpm natively expands ${VAR} in most top-level fields. For contents[] entries
@@ -14,8 +15,8 @@
 # survives into the package and the glob fails.
 #
 # Run as:
-#   nfpm pkg --packager deb --target out/ --config deploy/nfpm.yaml
-#   nfpm pkg --packager rpm --target out/ --config deploy/nfpm.yaml
+#   nfpm package --packager deb --target <out-path-or-dir> --config deploy/nfpm.yaml
+#   nfpm package --packager rpm --target <out-path-or-dir> --config deploy/nfpm.yaml
 
 name: aprgo
 arch: ${ARCH}
@@ -32,17 +33,6 @@ description: |
   or TCP.
 homepage: https://github.com/cartpauj/aprgo
 license: MIT
-
-# Per-format output filename. We deliberately ship TWO armhf .debs (one
-# built for ARMv6 baseline, one for ARMv7+), differentiated only by the
-# filename suffix the workflow sets via $VARIANT — dpkg can't tell them
-# apart by metadata. README guidance steers Pi Zero / Pi 1 users to the
-# `-armv6` variant.
-deb:
-  file_name_template: 'aprgo_${VERSION}_${ARCH}${VARIANT}.deb'
-
-rpm:
-  file_name_template: 'aprgo-${VERSION}.${ARCH}.rpm'
 
 # Soft dependencies. The aprgo binary itself is fully static (no shared-lib
 # deps), so nothing is strictly Required. Bluez is needed only for

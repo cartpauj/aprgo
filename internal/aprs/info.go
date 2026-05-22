@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Decoded holds what we lift from a packet for display/map use.
@@ -431,7 +432,7 @@ func looksLikeWeather(c string) bool {
 
 var (
 	altRegex  = regexp.MustCompile(`/A=([0-9]{6})`)
-	csRegex   = regexp.MustCompile(`^([0-9]{3})/([0-9]{3})\b`)
+	csRegex   = regexp.MustCompile(`^([0-9]{3})/([0-9]{3})`)
 	freqRegex = regexp.MustCompile(`\b(\d{2,3}\.\d{3,4})\s?MHz\b`)
 	// Tone: `T100` (CTCSS Hz, omit decimal point) OR `D023` (DCS).
 	freqToneRegex = regexp.MustCompile(`\bT(\d{2,3})\b|\bD(\d{3})\b`)
@@ -1261,26 +1262,44 @@ func sanitizeASCII(s string) string {
 }
 
 // sanitizeText cleans a free-form display field: strips control chars,
-// preserves printable ASCII (0x20-0x7E), and converts Latin-1 (0xA0-0xFF)
-// to UTF-8 so 8-bit characters like ° (0xB0), · (0xB7), ± (0xB1) — which
-// real APRS clients freely emit — render correctly in the browser rather
-// than as replacement chars.
+// preserves printable ASCII (0x20-0x7E), passes through already-valid
+// UTF-8 sequences verbatim (modern clients like APRSdroid emit UTF-8
+// directly, and some upstream iGates re-encode Latin-1→UTF-8 before we
+// see the bytes), and falls back to Latin-1→UTF-8 conversion for stray
+// 8-bit bytes (0xA0-0xFF) so ° · ± etc. from older trackers still render.
 //
-// 0x80-0x9F (Latin-1 C1 controls) are dropped: they're either control
-// chars or extended ASCII glyphs that vary by codepage, never useful.
+// 0x80-0x9F (Latin-1 C1 controls) are dropped when seen as raw bytes:
+// they're either control chars or codepage glyphs that vary by system.
 func sanitizeText(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
-	for i := 0; i < len(s); i++ {
+	for i := 0; i < len(s); {
 		c := s[i]
-		switch {
-		case c >= 0x20 && c < 0x7F:
-			b.WriteByte(c)
-		case c >= 0xA0:
-			// Latin-1 → UTF-8: U+0080..U+00FF encodes as 0xC2/0xC3 + low byte.
+		if c < 0x80 {
+			if c >= 0x20 && c != 0x7F {
+				b.WriteByte(c)
+			}
+			i++
+			continue
+		}
+		// High byte: try to decode as a UTF-8 sequence first. If it's a
+		// valid multi-byte rune, copy the bytes through unchanged so we
+		// don't double-encode chars that are already correct UTF-8.
+		if r, size := utf8.DecodeRuneInString(s[i:]); r != utf8.RuneError && size > 1 {
+			// Drop runes that decode to control chars (C0 / DEL / C1).
+			if !(r < 0x20 || r == 0x7F || (r >= 0x80 && r <= 0x9F)) {
+				b.WriteString(s[i : i+size])
+			}
+			i += size
+			continue
+		}
+		// Invalid UTF-8 start or lone continuation byte: treat as Latin-1.
+		if c >= 0xA0 {
 			b.WriteByte(0xC0 | (c >> 6))
 			b.WriteByte(0x80 | (c & 0x3F))
 		}
+		// 0x80-0x9F as raw bytes: drop (C1 controls / codepage glyphs).
+		i++
 	}
 	return b.String()
 }

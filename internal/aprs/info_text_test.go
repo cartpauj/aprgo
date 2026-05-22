@@ -58,6 +58,37 @@ func TestDropsLatin1ControlsC1Range(t *testing.T) {
 	}
 }
 
+func TestCommentPreservesValidUTF8(t *testing.T) {
+	// Modern clients (APRSdroid etc.) emit UTF-8 directly. Some upstream
+	// iGates also re-encode Latin-1 to UTF-8 before we see the bytes.
+	// Either way, valid UTF-8 sequences must pass through unchanged — not
+	// get byte-by-byte Latin-1-mangled into mojibake.
+	//
+	// "Türkiye" — ü = U+00FC = UTF-8 0xC3 0xBC.
+	info := "!4903.50N/07201.75W-T\xC3\xBCrkiye"
+	d := Decode(info, "APRS")
+	if !contains(d.Comment, "T\xC3\xBCrkiye") {
+		t.Errorf("valid UTF-8 should pass through unchanged, got %q", d.Comment)
+	}
+}
+
+func TestCourseSpeedStripsWithoutSpace(t *testing.T) {
+	// Per APRS101 §7, CSE/SPD is a fixed-length 7-byte field with no
+	// required trailing delimiter. Comment text may follow immediately.
+	info := "!4903.50N/07201.75W>174/000looking for menudo!"
+	d := Decode(info, "APRS")
+	if d.Course != 174 {
+		t.Errorf("course: got %d want 174", d.Course)
+	}
+	// 0 knots → 0 mph after rounding.
+	if d.Speed != 0 {
+		t.Errorf("speed: got %d want 0", d.Speed)
+	}
+	if d.Comment != "looking for menudo!" {
+		t.Errorf("comment: got %q want %q", d.Comment, "looking for menudo!")
+	}
+}
+
 // contains is a tiny strings.Contains substitute so we don't depend on
 // strings package in test (and the byte literals are clearer this way).
 func contains(s, sub string) bool {

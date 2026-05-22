@@ -83,12 +83,23 @@ jobs:
         env:
           VERSION:   ${{ steps.ver.outputs.version }}
           ARCH:      ${{ matrix.target.deb_arch }}
-          VARIANT:   ${{ matrix.target.deb_variant }}
           GO_BINARY: out/aprgo
         run: |
           # nfpm v2.46+ expands ${VAR} natively in most fields; contents[]
           # entries need explicit `expand: true` (already set in nfpm.yaml).
-          nfpm package --packager deb --target out/ --config deploy/nfpm.yaml
+          #
+          # nfpm doesn't support templated output filenames in config, so
+          # we pass --target as a full path. For ARMv7 / amd64 / arm64 /
+          # i386 the default name (`aprgo_<ver>_<arch>.deb`) is what we
+          # want, so we just target the out/ directory and let nfpm name
+          # it. For ARMv6 (same arch=armhf as ARMv7) we override the
+          # filename so dpkg-by-metadata-identical files don't collide.
+          if [ -n "${{ matrix.target.deb_variant }}" ]; then
+            TARGET="out/aprgo_${VERSION}_${ARCH}${{ matrix.target.deb_variant }}.deb"
+          else
+            TARGET="out/"
+          fi
+          nfpm package --packager deb --target "$TARGET" --config deploy/nfpm.yaml
           ls -la out/
 
       - name: Build .rpm
@@ -96,7 +107,6 @@ jobs:
         env:
           VERSION:   ${{ steps.ver.outputs.version }}
           ARCH:      ${{ matrix.target.rpm_arch }}
-          VARIANT:   ''
           GO_BINARY: out/aprgo
         run: |
           nfpm package --packager rpm --target out/ --config deploy/nfpm.yaml
