@@ -310,3 +310,31 @@
   });
   reconcile();
 })();
+
+// Allow-send-bulletins confirmation. When the operator ticks the
+// checkbox, ask them to explicitly agree before letting the form save
+// with it enabled. If they cancel the confirm dialog we untick so they
+// can't accidentally enable broadcasts. Doing this in JS is OK because
+// the server still requires the box on POST — JS just keeps the UI
+// honest.
+(function () {
+  var cb = document.getElementById("allow-send-bulletins");
+  if (!cb) return;
+  cb.addEventListener("change", function () {
+    if (!cb.checked) return;
+    var ok = confirm(
+      "Enable bulletin sending?\n\n" +
+      "Bulletins are BROADCASTS — every station in your RF range " +
+      "and many APRS-IS subscribers will see them.\n\n" +
+      "By enabling, you agree to use this responsibly:\n" +
+      "• Use sparingly (nets, EmComm, club announcements)\n" +
+      "• Don't repeat the same content too often\n" +
+      "• Don't use for personal chat or off-topic content\n" +
+      "• Don't impersonate NWS / SKYWARN / emergency services\n\n" +
+      "Continue?"
+    );
+    if (!ok) {
+      cb.checked = false;
+    }
+  });
+})();

@@ -6,13 +6,16 @@
     "Lede"    "All of aprgo's configuration in one place.")}}
 
   {{if and .ISUnverified (not .St.OfflineMode)}}<div class="flash err">
-    ⚠ APRS-IS rejected your passcode for callsign <code>{{.St.Callsign}}</code>. You're connected but every packet we send is being silently dropped (qAX'd) by the server. Generate the correct passcode for your callsign at <a href="https://apps.magicbug.co.uk/passcode/" target="_blank" rel="noopener">apps.magicbug.co.uk/passcode</a>, paste it below, and save.
+    ⚠ APRS-IS rejected your passcode for callsign <code>{{.St.Callsign}}</code>. You're connected but every packet we send is being silently dropped (qAX'd) by the server. Generate the correct passcode for your callsign at <a href="https://apps.magicbug.co.uk/passcode/" target="_blank" rel="noopener">apps.magicbug.co.uk/passcode</a>, then update the <a href="#passcode-field">passcode field</a> in section 01 below and save.
   </div>{{end}}
   {{if and .ISLastError (not .ISConnected) (not .St.OfflineMode)}}<div class="flash err">
     APRS-IS disconnected. Last error: <code>{{.ISLastError}}</code>
   </div>{{end}}
   {{if and .RFLastError (not .RFConnected)}}<div class="flash err">
     Radio (TNC) disconnected. Last error: <code>{{.RFLastError}}</code>
+  </div>{{end}}
+  {{if .RFNotKISS}}<div class="flash warn">
+    ⚠ Radio is connected but no AX.25 frames are decoding. The TNC may not be in KISS mode — check the TNC's mode switch / command (some need <code>KISS ON</code> or front-panel selection), confirm the baud rate, and verify it's not echoing menu prompts back over the serial line.
   </div>{{end}}
 
   <form class="settings-form" hx-post="/settings/save" hx-target="#save-flash" hx-swap="innerHTML">
@@ -32,7 +35,7 @@
       </label>
       <label><span class="label-head">APRS-IS passcode
         <span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Numeric, callsign-specific. Use <code>-1</code> for RX-only. <a href="https://apps.magicbug.co.uk/passcode/" target="_blank" rel="noopener">Generate one</a>. aprgo verifies the passcode against your callsign locally before saving.</span></span></span>
-        <input type="text" name="passcode" value="{{.St.Passcode}}" placeholder="numeric or -1 for RX-only" inputmode="numeric" pattern="-?\d+">
+        <input type="text" id="passcode-field" name="passcode" value="{{.St.Passcode}}" placeholder="numeric or -1 for RX-only" inputmode="numeric" pattern="-?\d+">
       </label>
     {{template "settingsSectionClose" .}}
 
@@ -58,8 +61,13 @@
         <label class="cb"><input type="checkbox" name="preemptive_digipeat" value="1" {{if .St.PreemptiveDigipeat}}checked{{end}}> Preemptive digipeat<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Honor packets that list your callsign anywhere in the path, not just as the next hop. Prior unused hops are marked used (MARK mode) so the original path is preserved on air. Never triggers on generic <code>WIDEn-N</code>.</span></span></label>
         <label class="cb"><input type="checkbox" name="offline_mode" value="1" {{if .St.OfflineMode}}checked{{end}}> Offline mode<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Skip APRS-IS entirely. Off-grid digi setups.</span></span></label>
         <label class="cb"><input type="checkbox" name="messaging_only_mode" value="1" {{if .St.MessagingOnlyMode}}checked{{end}}> Messaging-only<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Gate only messages and acks RF↔IS. Skip beacons, weather, telemetry.</span></span></label>
+        <label class="cb" id="allow-send-bulletins-label">
+          <input type="checkbox" name="allow_send_bulletins" id="allow-send-bulletins" value="1" {{if .St.AllowSendBulletins}}checked{{end}}>
+          Allow sending bulletins
+          <span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Bulletins are <strong>broadcasts</strong> — every station in your RF range and many APRS-IS subscribers will see them. Use sparingly for nets, club announcements, EmComm coordination. Sending too frequently or off-topic is considered channel abuse. The compose form appears on /bulletins after you enable this.</span></span>
+        </label>
       </div>
-      <label class="num-row"><span class="label-head">Recent-RF window (min)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">How recently a remote station must have been heard on RF before aprgo gates an APRS-IS message to them. Other iGate software defaults 30–60 min. aprgo defaults 30 min (APRS-IS convention) — raise for fixed digipeaters that beacon infrequently, lower for dense-traffic urban areas. Range 5–1440.</span></span></span>
+      <label class="num-row"><span class="label-head">Recent-RF window (min, default 30)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">How recently a remote station must have been heard on RF before aprgo gates an APRS-IS message to them. Other iGate software defaults 30–60 min. aprgo defaults 30 min (APRS-IS convention) — raise for fixed digipeaters that beacon infrequently, lower for dense-traffic urban areas. Range 5–1440.</span></span></span>
         <input type="number" name="igate_recent_rf_minutes" value="{{if .St.IGateRecentRFMinutes}}{{.St.IGateRecentRFMinutes}}{{else}}30{{end}}" min="5" max="1440">
       </label>
       <label class="num-row"><span class="label-head">IS→RF outer path<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Via path attached to the outer AX.25 frame when relaying an APRS-IS message to RF. Reference iGates (APRX, Direwolf IGTXVIA, YAAC, PinPoint) default to <code>WIDE1-1</code> (one fill-in hop). Leave empty for direct only — appropriate for hilltop sites with wide coverage. Max 2 hops.</span></span></span>
@@ -68,7 +76,7 @@
     {{else}}
       <div class="mode-managed-note">
         <div class="eyebrow">Managed by mode</div>
-        <p>Set automatically by mode <code>{{.St.Mode}}</code>. <a href="/setup/mode">Switch to Advanced</a> to edit.</p>
+        <p>Set automatically by mode <code>{{.St.Mode}}</code>. Switch mode to <em>Advanced</em> above if you want to customize these flags directly.</p>
         <div class="mode-flag-chips">
           <span class="flag-chip {{if .St.TXEnable}}on{{end}}">TX enable</span>
           <span class="flag-chip {{if .St.GateRFtoIS}}on{{end}}">Gate RF → IS</span>
@@ -87,17 +95,24 @@
     {{template "settingsSectionClose" .}}
 
     {{template "settingsSectionOpen" (dict "Num" "04" "Title" "TNC" "Sub" "The radio interface aprgo will talk to.")}}
+      {{if eq (printf "%s" .St.Mode) "is"}}
+      <div class="mode-managed-note">
+        <div class="eyebrow">Not used in APRS-IS only mode</div>
+        <p>You picked the APRS-IS only mode — no radio interface needed. <a href="/setup/mode" class="btn ghost">Switch mode…</a></p>
+      </div>
+      {{else}}
       <div class="inline-fields">
         <div class="dim mono-num">
           {{if eq (printf "%s" .St.TNCKind) "serial"}}Serial: <code>{{.St.TNCSerial}}</code>{{else if eq (printf "%s" .St.TNCKind) "tcp"}}TCP: <code>{{.St.TNCAddr}}</code>{{else}}none configured{{end}}
         </div>
         <a href="/setup/tnc" class="btn ghost">Change TNC…</a>
-        <span class="dim">·</span>
-        {{if .RFConnected}}<span class="status-ok">● live</span>{{else}}<span class="dim">○ not connected</span>{{end}}
+        <span class="sep">·</span>
+        {{if .RFConnected}}<span class="status-ok">● connected</span>{{else}}<span class="dim">○ disconnected</span>{{end}}
       </div>
+      {{end}}
       {{if eq (printf "%s" .St.Mode) "advanced"}}
       <details class="advanced-tnc">
-        <summary>Advanced KISS parameters</summary>
+        <summary>Advanced KISS parameters (TX delay, persist, slot time, TX tail)</summary>
         <p class="dim small">Sent on every TNC connect. Modern KISS TNCs (Direwolf, Mobilinkd, NinoTNC, Kenwood TM-D710/TH-D74) honor these; legacy TNC-2 hardware silently ignores them. Leave any field at <code>0</code> to keep the TNC's own default — most modern TNCs ship with sane values (Mobilinkd TNC3 defaults: 300ms TX delay, 20ms TX tail).</p>
         <div class="grid-cols-fit-wide">
           <label>TX Delay (ms)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Delay between keying PTT and starting data. Most radios need 200-500ms or the first bytes get lost. Leave at 0 unless you see truncated TX in receiver logs.</span></span>
@@ -121,9 +136,17 @@
     {{if .St.OfflineMode}}
       <div class="mode-managed-note">
         <div class="eyebrow">Disabled in Offline mode</div>
-        <p>APRS-IS is not used. <a href="/setup/mode">Switch mode…</a> to re-enable.</p>
+        <p>APRS-IS is not used. <a href="/setup/mode" class="btn ghost">Switch mode…</a></p>
       </div>
     {{else}}
+      <div class="inline-fields">
+        <div class="dim mono-num">{{.St.ISServer}}</div>
+        <span class="sep">·</span>
+        {{if not .ISConnected}}<span class="dim">○ disconnected</span>
+        {{else if .ISUnverified}}<span class="status-warn">● unverified</span>
+        {{else if .ISVerified}}<span class="status-ok">● verified</span>
+        {{else}}<span class="status-ok">● connecting</span>{{end}}
+      </div>
       <label>Server
         <select id="is-server-region" class="is-server-region">
           <option value="rotate.aprs2.net:14580">Global rotation — rotate.aprs2.net</option>
@@ -136,13 +159,9 @@
         </select>
         <input type="text" id="is-server-custom" name="is_server" value="{{.St.ISServer}}" placeholder="host:port">
       </label>
-      <label><span class="label-head">Filter<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop"><code>r/LAT/LON/KM</code> = radius scope. Empty = full firehose (you don't want this).</span></span></span>
+      <label><span class="label-head">Filter<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop"><code>r/LAT/LON/KM</code> = radius scope. Empty = receive all packets (high bandwidth; most ops set a radius).</span></span></span>
         <input type="text" name="is_filter" value="{{.St.ISFilter}}" placeholder="r/LAT/LON/150">
       </label>
-      <div class="status-block">
-        <span class="eyebrow">Status</span>
-        {{if .ISConnected}}<span class="status-ok">● connected</span>{{else}}<span class="dim">○ disconnected</span>{{end}}
-      </div>
     {{end}}
     {{template "settingsSectionClose" .}}
 
@@ -151,7 +170,7 @@
       {{range .BeaconViews}}
       <fieldset class="beacon-row">
         <legend>Beacon: {{.B.Name}}</legend>
-        <div class="beacon-last-fired">{{$lf := index $.BeaconLastFired .B.Name}}{{if and $lf (not $lf.IsZero)}}Last fired: {{ago $lf}} ago{{else}}Hasn't fired since startup{{end}}</div>
+        {{$lf := index $.BeaconLastFired .B.Name}}{{if and $lf (not $lf.IsZero)}}<div class="beacon-last-fired">Last fired: {{ago $lf}} ago</div>{{end}}
         <input type="hidden" name="beacon_{{.Idx}}_name" value="{{.B.Name}}">
         <div class="beacon-row-grid">
           <label><span class="label-head">Symbol<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Icon shown on aprs.fi and radios. First char = symbol table or overlay; second char = symbol code. <a href="http://www.aprs.org/symbols.html" target="_blank" rel="noopener">Full reference</a>.</span></span></span>

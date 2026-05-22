@@ -141,6 +141,24 @@ type State struct {
 	// dedupe by sender+ID, so reusing an ID right after restart would
 	// confuse them). Bumped+saved on every outbound message.
 	NextMsgID int `json:"next_msg_id"`
+
+	// MessageGroups is the operator's bulletin-group subscription list per
+	// Bruninga's PROTOCOL.TXT: empty = receive all groups; non-empty =
+	// accept plain BLN0-9 always + only listed group bulletins (matched
+	// case-insensitively on the 5-char group suffix of `BLNxGGGGG`).
+	MessageGroups []string `json:"message_groups,omitempty"`
+	// NWSSubscribed gates the display of NWS / SKY / CWA bulletins on
+	// the /bulletins page. Default true; storage is unconditional so
+	// flipping it on later still shows historical context.
+	NWSSubscribed bool `json:"nws_subscribed"`
+	// AllowSendBulletins gates the Compose-bulletin form on /bulletins.
+	// Off by default because bulletins are broadcasts to every station
+	// in range and the operator should consciously opt in. UI flow:
+	// requires Advanced mode + explicit checkbox + JS confirm()
+	// agreement that they understand bulletins are broadcasts and
+	// shouldn't be abused.
+	AllowSendBulletins bool `json:"allow_send_bulletins"`
+
 	// Digipeating: split into two independent flags so fill-in and full-digi
 	// roles can be configured separately. Both follow the standard APRS
 	// New-N Paradigm decrement (see internal/gate).
@@ -273,6 +291,7 @@ func Open(path string) (*Store, error) {
 			TNCSlotTimeMs:     DefaultTNCSlotTimeMs,
 			TNCTXTailMs:       DefaultTNCTXTailMs,
 			IGateTXPath:       DefaultIGateTXPath,
+			NWSSubscribed:     true, // most operators want severe-weather alerts
 			AdminPasswordHash: string(hash),
 			SessionKey:        base64.StdEncoding.EncodeToString(keyBytes),
 		}

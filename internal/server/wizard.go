@@ -29,7 +29,11 @@ const (
 )
 
 var wizardSteps = map[wizardFlavor][]string{
-	flavorFirstRun: {"identity", "location", "tnc", "mode", "advanced-flags", "beacon", "done"},
+	// `mode` comes before `tnc` so an operator who picks IS-only skips the
+	// TNC pairing step entirely. Other modes proceed to TNC pairing as
+	// before; the reordering is invisible since `mode` is just a radio
+	// picker and `tnc` is the long step.
+	flavorFirstRun: {"identity", "location", "mode", "tnc", "advanced-flags", "beacon", "done"},
 	flavorTNC:      {"tnc", "done"},
 	flavorLoc:      {"location", "done"},
 	flavorMode:     {"mode", "advanced-flags", "done"},
@@ -40,6 +44,9 @@ var wizardSteps = map[wizardFlavor][]string{
 // and renderStep (visible-step filter) so all three stay in sync.
 func shouldSkipStep(stepKey string, m state.Mode) bool {
 	switch stepKey {
+	case "tnc":
+		// IS-only mode has no radio — skip the TNC pairing step entirely.
+		return m == state.ModeIS
 	case "beacon":
 		return m == state.ModeRXOnly
 	case "advanced-flags":
@@ -329,6 +336,7 @@ func (s *Server) wizardSave(w http.ResponseWriter, r *http.Request) {
 		d.Draft.OfflineMode = r.FormValue("offline_mode") == "1"
 		d.Draft.MessagingOnlyMode = r.FormValue("messaging_only_mode") == "1"
 		d.Draft.PreemptiveDigipeat = r.FormValue("preemptive_digipeat") == "1"
+		d.Draft.AllowSendBulletins = r.FormValue("allow_send_bulletins") == "1"
 		if v := r.FormValue("igate_recent_rf_minutes"); v != "" {
 			if m, err := strconv.Atoi(v); err == nil && m >= 5 && m <= 1440 {
 				d.Draft.IGateRecentRFMinutes = m
@@ -453,6 +461,7 @@ func (s *Server) commitWizardDraft(d *wizardDraft) error {
 		st.OfflineMode = d.Draft.OfflineMode
 		st.MessagingOnlyMode = d.Draft.MessagingOnlyMode
 		st.PreemptiveDigipeat = d.Draft.PreemptiveDigipeat
+		st.AllowSendBulletins = d.Draft.AllowSendBulletins
 		st.IGateRecentRFMinutes = d.Draft.IGateRecentRFMinutes
 		st.IGateTXPath = d.Draft.IGateTXPath
 		st.SetupComplete = true
@@ -592,9 +601,18 @@ func applyModeDefaults(st *state.State, m state.Mode) {
 		st.PreemptiveDigipeat = false
 	}
 	// Reset the IS filter to mode default (operator's radius preserved).
+	// iGate roles use `-t/pwntso` to drop the position/weather/telemetry
+	// firehose — they only consume messages out of IS to gate to RF, so
+	// the rest is bandwidth waste. ModeIS is a client (not an iGate); the
+	// operator wants positions + weather to populate the map, so we DON'T
+	// apply that exclusion here.
 	if m != state.ModeOffline {
 		km := filterRadiusFromIS(st.ISFilter)
-		st.ISFilter = fmt.Sprintf("r/%.2f/%.2f/%d -t/pwntso", st.Lat, st.Lon, km)
+		if m == state.ModeIS {
+			st.ISFilter = fmt.Sprintf("r/%.2f/%.2f/%d", st.Lat, st.Lon, km)
+		} else {
+			st.ISFilter = fmt.Sprintf("r/%.2f/%.2f/%d -t/pwntso", st.Lat, st.Lon, km)
+		}
 	}
 	switch m {
 	case state.ModeRXOnly:
@@ -720,6 +738,11 @@ func beaconDefaultsFor(m state.Mode) (symbol, comment string, messages bool) {
 		return "I&", "aprgo messaging-only iGate", true
 	case state.ModeOffline:
 		return "S#", "aprgo offline digi", false
+	case state.ModeIS:
+		// "Y" on the primary table is the "Yagi" / general HF/portable
+		// symbol — close to the "amateur radio" overlay we want for a
+		// client station. "/-" (house) is also common for fixed sites.
+		return "/-", "aprgo APRS-IS client", true
 	}
 	return "I&", "aprgo", true
 }

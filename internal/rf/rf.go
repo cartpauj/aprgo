@@ -52,6 +52,15 @@ type RF struct {
 	// (self-inflicted teardown after a settings save) so the resulting read
 	// error isn't surfaced as lastError to the UI.
 	silentDrop bool
+
+	// TNC-health counters used by the not-in-KISS watchdog (see session()).
+	// bytesIn ticks on every read; framesIn ticks on every successful
+	// AX.25 decode. If bytes climb but frames don't move for ~30s the TNC
+	// is probably stuck in command mode or sending non-KISS chatter, so
+	// notKISS surfaces a hint to the UI without disconnecting.
+	bytesIn  uint64
+	framesIn uint64
+	notKISS  bool
 }
 
 // LastError returns the most recent rf session error and its timestamp.
@@ -349,6 +358,12 @@ func (r *RF) session(parent context.Context, snap state.State) error {
 		writeDone <- r.writeLoop(ctx, rw)
 	}()
 
+	// TNC health watchdog — flags the session if bytes are flowing but
+	// no AX.25 frames are decoding (a stuck-in-command-mode TNC is the
+	// most common silent failure). Exits when ctx cancels; no join
+	// needed because it has no resources to release.
+	go r.tncHealthWatchdog(ctx)
+
 	readErr := r.readLoop(ctx, rw, iface)
 	cancel()
 	_ = rw.Close()
@@ -368,6 +383,12 @@ func (r *RF) readLoop(ctx context.Context, rd io.Reader, iface string) error {
 		if err != nil {
 			return err
 		}
+		// Health counters (read by tncHealthWatchdog). Guarded by r.mu
+		// since notKISS is also read from the HTTP layer; cheap because
+		// reads burst-drain in chunks rather than byte-by-byte.
+		r.mu.Lock()
+		r.bytesIn += uint64(n)
+		r.mu.Unlock()
 		segs := split.Push(buf[:n])
 		for _, seg := range segs {
 			payload := ax25.DecodeKISS(seg)
@@ -378,9 +399,72 @@ func (r *RF) readLoop(ctx context.Context, rd io.Reader, iface string) error {
 			if ferr != nil {
 				continue
 			}
+			r.mu.Lock()
+			r.framesIn++
+			r.notKISS = false // any valid frame clears the flag
+			r.mu.Unlock()
 			r.bus.Frames.Publish(frame)
 		}
 	}
+}
+
+// tncHealthWatchdog flags the connection as "not in KISS mode" when bytes
+// stream in but no AX.25 frame decodes for 30 s. Distinguishes "TNC not
+// configured for KISS" (chatter on the wire, no valid frames) from
+// "channel is just quiet" (no bytes, no frames). Set notKISS only after
+// we've seen meaningful traffic — typically a TNC in command mode
+// echoes prompts and menu output, producing dozens of bytes/min without
+// any KISS-framed payload.
+func (r *RF) tncHealthWatchdog(ctx context.Context) {
+	const (
+		checkInterval = 30 * time.Second
+		bytesThreshold = 50 // bytes seen in window before we suspect chatter
+	)
+	// Seed last* from the CURRENT counter values, not zero. Without this,
+	// the first tick would read curBytes - 0 = the entire historical count
+	// (counters persist across sessions on the RF struct), so any
+	// reconnect that didn't see a frame in its first 30s would falsely
+	// flag the new session as not-in-KISS based on the previous session's
+	// byte history.
+	r.mu.Lock()
+	lastBytes, lastFrames := r.bytesIn, r.framesIn
+	r.notKISS = false // clear any stale flag from the previous session
+	r.mu.Unlock()
+	t := time.NewTicker(checkInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		r.mu.Lock()
+		curBytes := r.bytesIn
+		curFrames := r.framesIn
+		bytesDelta := curBytes - lastBytes
+		framesDelta := curFrames - lastFrames
+		lastBytes, lastFrames = curBytes, curFrames
+		flag := bytesDelta >= bytesThreshold && framesDelta == 0
+		// One-shot log when the state transitions to flagged; clears
+		// silently when a frame eventually decodes (readLoop resets it).
+		if flag && !r.notKISS {
+			log.Printf("rf: TNC health: %d bytes in %s with no valid AX.25 frame — TNC may not be in KISS mode", bytesDelta, checkInterval)
+		}
+		if flag {
+			r.notKISS = true
+		}
+		r.mu.Unlock()
+	}
+}
+
+// NotKISSDetected reports whether the health watchdog suspects the TNC
+// is not in KISS mode (bytes received but no frames decoded). Surfaced
+// on Settings so the operator gets a hint instead of staring at a
+// silently empty feed.
+func (r *RF) NotKISSDetected() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.notKISS
 }
 
 // txMinSpacing is the minimum gap between successive RF writes. APRS courtesy

@@ -46,6 +46,9 @@ func (s *Server) routes() http.Handler {
 	a.HandleFunc("/stations", s.handleStations)
 	a.HandleFunc("/stations/", s.handleStationDetail)
 	a.HandleFunc("/messages", s.handleMessages)
+	a.HandleFunc("/bulletins", s.handleBulletins)
+	a.HandleFunc("/bulletins/save", s.handleBulletinsSave)
+	a.HandleFunc("/bulletins/send", s.handleBulletinSend)
 	a.HandleFunc("/messages/send", s.handleMessageSend)
 	a.HandleFunc("/messages/thread", s.handleMessagesThread)
 	a.HandleFunc("/messages/conv-list", s.handleMessagesConvList)
@@ -160,7 +163,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 // = amber, "err" = red, "" = neutral.
 type statusCard struct {
 	Label string // small uppercase eyebrow
-	Value string // big main value (or "● live" / "● verified" for connection cards)
+	Value string // big main value (or "● connected" / "● verified" for connection cards)
 	Sub   string // dim secondary line below
 	Tone  string // "ok" / "warn" / "err" / "" — drives the left-edge accent color
 }
@@ -179,7 +182,7 @@ func (s *Server) dashboardStatusCards(snap state.State) []statusCard {
 	if snap.TNCKind == state.TNCNone {
 		rfCard = statusCard{Label: "RF", Tone: "", Value: "○ no TNC", Sub: "configure in Settings"}
 	} else if rfConn {
-		rfCard = statusCard{Label: "RF", Tone: "ok", Value: "● live", Sub: s.rf.IFace()}
+		rfCard = statusCard{Label: "RF", Tone: "ok", Value: "● connected", Sub: s.rf.IFace()}
 	} else {
 		rfCard.Sub = "see Settings"
 	}
@@ -1053,6 +1056,68 @@ func (s *Server) handleStations(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "stations.html", data)
 }
 
+// handleBulletins renders the bulletins page — broadcast-form message
+// frames (BLN*, NWS*, SKY*, CWA-*) grouped by kind and sorted per spec.
+// Read-only display; the form below the list saves the operator's
+// group whitelist + NWS subscription flag.
+func (s *Server) handleBulletins(w http.ResponseWriter, r *http.Request) {
+	snap := s.state.Snapshot()
+	// Look back 24 h — announcements (BLNA-Z) live longer than numbered
+	// per Bruninga, but 24h covers the spec retention envelope of both.
+	cutoff := time.Now().Add(-24 * time.Hour)
+	rows, err := s.store.LatestBulletins(cutoff, 200)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	view := buildBulletinsView(rows, snap, cutoff)
+	data := s.common("Bulletins", r)
+	data["St"] = snap
+	data["View"] = view
+	if r.URL.Query().Get("saved") == "1" {
+		data["Flash"] = "Subscription saved."
+	}
+	if r.URL.Query().Get("sent") == "1" {
+		data["Flash"] = "Bulletin transmitted."
+	}
+	if e := r.URL.Query().Get("err"); e != "" {
+		data["FlashErr"] = e
+	}
+	s.render(w, "bulletins.html", data)
+}
+
+// handleBulletinsSave persists the operator's bulletin-group whitelist
+// and NWS-subscription flag. POST-only. Empty group list (or all
+// whitespace) clears the whitelist back to "receive all" semantics.
+func (s *Server) handleBulletinsSave(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	if !s.requireCSRF(w, r) {
+		return
+	}
+	raw := r.FormValue("groups")
+	nws := r.FormValue("nws_subscribed") == "1"
+	var groups []string
+	for _, g := range strings.Split(raw, ",") {
+		g = strings.TrimSpace(strings.ToUpper(g))
+		if g != "" {
+			groups = append(groups, g)
+		}
+	}
+	_ = s.state.Update(func(st *state.State) error {
+		st.MessageGroups = groups
+		st.NWSSubscribed = nws
+		return nil
+	})
+	http.Redirect(w, r, "/bulletins?saved=1", http.StatusSeeOther)
+}
+
 // handleMessages renders the chat-style messages page: left rail = list of
 // conversations grouped by peer, right pane = active thread.
 // Active peer is selected via ?with=<callsign>; absent → "no chat selected"
@@ -1450,6 +1515,7 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 			st.OfflineMode = r.FormValue("offline_mode") == "1"
 			st.MessagingOnlyMode = r.FormValue("messaging_only_mode") == "1"
 			st.PreemptiveDigipeat = r.FormValue("preemptive_digipeat") == "1"
+			st.AllowSendBulletins = r.FormValue("allow_send_bulletins") == "1"
 			if v := r.FormValue("igate_recent_rf_minutes"); v != "" {
 				if m, err := strconv.Atoi(v); err == nil && m >= 5 && m <= 1440 {
 					st.IGateRecentRFMinutes = m

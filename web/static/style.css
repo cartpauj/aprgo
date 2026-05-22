@@ -1836,8 +1836,9 @@ body.view-raw .pkt .raw-line    { display: inline; }
   font-weight: 700;
   flex: 0 0 18px;
 }
-.flash.ok  { background: var(--accent-soft); color: var(--accent); border-color: rgba(var(--accent-rgb), 0.3); }
-.flash.err { background: var(--err-soft); color: var(--err); border-color: rgba(var(--err-rgb), 0.3); white-space: pre-wrap; font-family: var(--font-mono); font-size: 0.8rem; }
+.flash.ok   { background: var(--accent-soft); color: var(--accent); border-color: rgba(var(--accent-rgb), 0.3); }
+.flash.warn { background: color-mix(in srgb, var(--warn, #d29922) 12%, transparent); color: var(--warn, #d29922); border-color: color-mix(in srgb, var(--warn, #d29922) 35%, transparent); }
+.flash.err  { background: var(--err-soft); color: var(--err); border-color: rgba(var(--err-rgb), 0.3); white-space: pre-wrap; font-family: var(--font-mono); font-size: 0.8rem; }
 .flash.err.flash-banner::before { content: "!"; background: var(--err); }
 
 /* ─── Misc tags / pills ──────────────────────────────────────────────── */
@@ -2381,6 +2382,16 @@ html, body { overflow-x: hidden; }
   background: var(--panel);
   cursor: pointer;
   transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
+  /* Override base `label` styling (uppercase, monospace, tight letter-
+     spacing) — those are right for form-field captions but make a card
+     of body copy read like a shouted headline. Mode-cards are card-style
+     UI with title + description, not labels in the typographic sense. */
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--fg);
 }
 .mode-card:hover { border-color: var(--border-strong); background: var(--panel-2); }
 .mode-card input[type="radio"] { margin-top: 6px; accent-color: var(--accent); }
@@ -2424,6 +2435,8 @@ html, body { overflow-x: hidden; }
 .hint-tag    { font-size: 0.78rem; }
 .ack-mark    { color: var(--ok); font-weight: 600; }
 .status-ok   { color: var(--ok); }
+.status-warn { color: var(--warn); }
+.status-err  { color: var(--err); }
 .status-block { display: flex; flex-direction: column; gap: 4px; }
 
 .grid-cols-fit       { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--gap-3); }
@@ -3610,3 +3623,118 @@ html.theme-light .chat-thread, html.theme-auto .chat-thread { background: var(--
   font-size: 0.9rem;
 }
 .diag-blocked-list a { font-family: var(--font-mono); }
+
+/* ─── Bulletins page ────────────────────────────────────────────────── */
+.bulletins-page { display: flex; flex-direction: column; gap: var(--gap-3); }
+.bulletins-section-h {
+  font-size: 0.78rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: var(--gap-3) 0 4px;
+  font-weight: 600;
+}
+.bulletin {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: var(--r-2);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.88rem;
+}
+.bulletin-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-3);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+}
+.bulletin-id { color: var(--fg-strong); font-weight: 600; }
+.bulletin-from a { color: var(--accent); }
+.bulletin-to { color: var(--muted); }
+.bulletin-group {
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.65rem;
+}
+.bulletin-time { margin-left: auto; }
+.bulletin-body { color: var(--fg); white-space: pre-wrap; word-wrap: break-word; }
+.bulletin-sev {
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.bulletin-sev.sev-severe { background: var(--err); color: #fff; }
+.bulletin-sev.sev-warning { background: var(--warn); color: #1a1a1a; }
+.bulletin-sev.sev-watch { background: color-mix(in srgb, var(--warn) 50%, var(--bg)); color: var(--warn); border: 1px solid var(--warn); }
+.bulletin-sev.sev-statement,
+.bulletin-sev.sev-info { background: var(--accent-soft); color: var(--accent); }
+.bulletin.sev-severe { border-left-color: var(--err); }
+.bulletin.sev-warning { border-left-color: var(--warn); }
+.bulletin.sev-watch { border-left-color: var(--warn); }
+.bulletin-announce { border-left-color: var(--accent); }
+.bulletin-numbered, .bulletin-group { border-left-color: var(--border); }
+.bulletins-settings {
+  margin-top: var(--gap-4);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  padding: 12px 14px;
+}
+.bulletins-settings summary {
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.bulletins-form { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; }
+.bulletins-form input[type="text"] { width: 100%; padding: 6px 10px; font-family: var(--font-sans); }
+.empty-bulletins {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+}
+.empty-bulletins .empty-eyebrow {
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.bulletins-compose {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn, #d29922);
+  border-radius: var(--r-2);
+  padding: 12px 14px;
+  margin-bottom: var(--gap-3);
+}
+.bulletins-compose summary {
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--warn, #d29922);
+  font-weight: 600;
+}
+.bulletins-compose textarea, .bulletins-compose select {
+  width: 100%;
+  padding: 6px 10px;
+  font-family: var(--font-sans);
+}

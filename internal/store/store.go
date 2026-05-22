@@ -713,6 +713,62 @@ func (s *Store) Conversations(me string) ([]Conversation, error) {
 	return out, rows.Err()
 }
 
+// Bulletin is a row from the bulletins query — one entry per
+// (source, dest) keyed on the latest received body. Bulletins follow
+// "replace by identifier" semantics (PROTOCOL.TXT) so we collapse to
+// the newest per (source, dest) pair at query time rather than render
+// every historical fragment.
+type Bulletin struct {
+	Source string
+	Dest   string
+	Body   string
+	Time   time.Time
+}
+
+// LatestBulletins returns the latest bulletin per (source, dest) received
+// since `since`. Bulletins are inbound message frames whose addressee
+// matches BLN*/NWS*/SKY*/CWA-*. The (source, dest) grouping mirrors the
+// spec's replacement semantics — a new bulletin from the same source
+// with the same identifier replaces the old one.
+func (s *Store) LatestBulletins(since time.Time, limit int) ([]Bulletin, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(`
+		WITH bulletins AS (
+			SELECT source, dest, ts, body
+			FROM messages
+			WHERE direction='in' AND ts >= ?
+			  AND (UPPER(dest) LIKE 'BLN%' OR UPPER(dest) LIKE 'NWS-%' OR UPPER(dest) LIKE 'NWS\_%' ESCAPE '\'
+			       OR UPPER(dest) LIKE 'SKY%' OR UPPER(dest) LIKE 'CWA-%')
+		)
+		SELECT source, dest, MAX(ts) AS last_ts,
+			(SELECT body FROM bulletins b2
+			  WHERE b2.source=bulletins.source AND b2.dest=bulletins.dest
+			  ORDER BY ts DESC LIMIT 1) AS body
+		FROM bulletins
+		GROUP BY source, dest
+		ORDER BY last_ts DESC
+		LIMIT ?`, since.Unix(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Bulletin
+	for rows.Next() {
+		var b Bulletin
+		var ts int64
+		if err := rows.Scan(&b.Source, &b.Dest, &ts, &b.Body); err != nil {
+			return nil, err
+		}
+		b.Time = time.Unix(ts, 0)
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 // MessagesWithPeer returns the message thread between `me` and `peer`, oldest
 // first (chat-style: scroll-to-bottom rendering). Caller can flip downstream.
 func (s *Store) MessagesWithPeer(me, peer string, limit int) ([]Message, error) {

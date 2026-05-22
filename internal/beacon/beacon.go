@@ -67,6 +67,13 @@ func New(st *state.Store, r *rf.RF, b *bus.Bus) *Beacon {
 	}
 }
 
+// SetIS wires an APRS-IS sender for beacon emit when the station is
+// running without a TNC (ModeIS). Called once at construction time by the
+// server; calling it more than once just replaces the sender.
+func (b *Beacon) SetIS(s ISSender) {
+	b.is = s
+}
+
 // recordFired stamps `name` with the current time after a successful TX.
 func (b *Beacon) recordFired(name string) {
 	b.lastMu.Lock()
@@ -177,6 +184,26 @@ func (b *Beacon) transmit(snap state.State, cfg state.Beacon) error {
 	raw, err := ax25.EncodeUIFrame(src, dest, cfg.Path, info)
 	if err != nil {
 		return err
+	}
+	// Pick transport: when the operator has no TNC configured (ModeIS) we
+	// emit beacons via APRS-IS as a TNC2 line. The server stamps qAC/qAS
+	// itself, so we send a bare `SRC>DEST:info` (no path — AX.25 paths are
+	// meaningless when injected directly into IS).
+	if snap.TNCKind == state.TNCNone {
+		if b.is == nil {
+			return fmt.Errorf("beacon %s: IS-only mode but no IS sender configured", cfg.Name)
+		}
+		tnc2 := fmt.Sprintf("%s>%s:%s", src, dest, string(info))
+		if err := b.is.Send(tnc2); err != nil {
+			return err
+		}
+		if b.bus != nil {
+			if frame, ferr := ax25.FromAX25(raw, ax25.SrcTX, "beacon:"+cfg.Name); ferr == nil {
+				b.bus.Frames.Publish(frame)
+			}
+		}
+		b.recordFired(cfg.Name)
+		return nil
 	}
 	if err := b.rf.TX(raw); err != nil {
 		return err

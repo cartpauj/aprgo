@@ -106,6 +106,55 @@ func TestLooksLikeTimestamp(t *testing.T) {
 	}
 }
 
+func TestNMEAChecksumReject(t *testing.T) {
+	// Same as TestNMEAGPRMC but with a corrupted checksum (last hex char
+	// flipped). Should be rejected — no lat/lon set.
+	d := Decode("$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6B", "")
+	if d.Lat != nil || d.Lon != nil {
+		t.Error("RMC with corrupted checksum should not produce position")
+	}
+}
+
+func TestNMEAChecksumMissing(t *testing.T) {
+	// Per APRS101 §5 the checksum is optional; a sentence without `*XX`
+	// should still parse.
+	d := Decode("$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394", "")
+	if d.Lat == nil {
+		t.Error("RMC without checksum should still parse")
+	}
+}
+
+func TestDAOUppercase(t *testing.T) {
+	// !W00! means WGS84, no extra precision (both digits = 0). Position
+	// stays the same as without DAO.
+	d1 := Decode("!4903.50N/07201.75W>Test", "")
+	d2 := Decode("!4903.50N/07201.75W>Test !W00!", "")
+	if d1.Lat == nil || d2.Lat == nil {
+		t.Fatal("expected positions to decode")
+	}
+	if *d1.Lat != *d2.Lat || *d1.Lon != *d2.Lon {
+		t.Errorf("!W00! shouldn't shift position: %f,%f vs %f,%f", *d1.Lat, *d1.Lon, *d2.Lat, *d2.Lon)
+	}
+	// !W55! should add 0.5/100 minute = 0.005 min to both lat and lon.
+	// 0.005 min in degrees = 0.005/60 ≈ 8.33e-5°.
+	d3 := Decode("!4903.50N/07201.75W>!W55!", "")
+	if d3.Lat == nil {
+		t.Fatal("DAO packet should still decode position")
+	}
+	delta := *d3.Lat - *d1.Lat
+	if delta < 7e-5 || delta > 1e-4 {
+		t.Errorf("!W55! lat delta = %g, want ~8.3e-5", delta)
+	}
+}
+
+func TestDAOStripped(t *testing.T) {
+	// !DAO! marker should be removed from the comment after parsing.
+	d := Decode("!4903.50N/07201.75W>hello !W55! world", "")
+	if d.Comment == "" || (d.Comment != "hello  world" && d.Comment != "hello world") {
+		t.Errorf("comment after DAO strip = %q; want DAO removed", d.Comment)
+	}
+}
+
 func TestLegacyGPSDTIIgnored(t *testing.T) {
 	// /1<NMEA-ish data>: pre-1.0 GPS-port passthrough. Spec says
 	// "reserved, do not transmit"; we accept-and-ignore.

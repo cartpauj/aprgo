@@ -91,6 +91,11 @@ type Server struct {
 	// APRS-IS IGating.aspx "responder position" courtesy).
 	msgTracker *gate.MessagedRecipientTracker
 
+	// bulletinSends enforces a per-identifier cooldown on outbound
+	// bulletin TX (5 min) so accidental double-clicks on the compose
+	// form don't flood the channel.
+	bulletinSends *bulletinSendTracker
+
 	loginLimit *loginLimiter
 
 	// In-flight async Bluetooth pair operations, keyed by session cookie.
@@ -203,10 +208,12 @@ func New(opts Options) (*Server, error) {
 		// polite traffic — normal stations rarely exceed 5/min.
 		srcLimiter: newSourceRateLimiter(30, 15*time.Minute),
 		stats:      newStatsCounters(),
-		msgTracker: gate.NewMessagedRecipientTracker(30 * time.Minute),
+		msgTracker:    gate.NewMessagedRecipientTracker(30 * time.Minute),
+		bulletinSends: newBulletinSendTracker(),
 	}
 	s.is = igate.New(st, b)
 	s.beacon = beacon.New(st, s.rf, b)
+	s.beacon.SetIS(s.is) // enables IS-only beacon transmission for ModeIS
 	return s, nil
 }
 
@@ -557,15 +564,22 @@ func (s *Server) parseLoop(ctx context.Context) {
 						strings.HasPrefix(bodyUp, "UNIT.") ||
 						strings.HasPrefix(bodyUp, "EQNS.") ||
 						strings.HasPrefix(bodyUp, "BITS.")
-					isBulletin := strings.HasPrefix(strings.ToUpper(pkt.Decoded.MsgTo), "BLN")
+					isBulletinDest := isBulletinAddressee(pkt.Decoded.MsgTo)
 					isSelfAddressed := strings.EqualFold(pkt.Decoded.MsgTo, pkt.Frame.Src)
 
 					addressedToUs := strings.EqualFold(pkt.Decoded.MsgTo, snap.Callsign)
 					fromUs := strings.EqualFold(pkt.Frame.Src, snap.Callsign) ||
 						strings.EqualFold(pkt.Decoded.MsgOrigSrc, snap.Callsign)
 
-					keep := !isTelemCfg && !isBulletin && !isSelfAddressed &&
-						(addressedToUs || fromUs)
+					// Keep 1:1 messages we're a party to AND all bulletins
+					// (BLN*, NWS*, SKY*, CWA-*). Bulletins land in the same
+					// messages table; the /bulletins page filters them out
+					// of /messages conversations via the existing peer-
+					// keyed CTE (which only joins on source=me OR dest=me,
+					// so bulletins addressed to BLNxxxx never appear in
+					// conversations regardless).
+					keep := !isTelemCfg && !isSelfAddressed &&
+						(addressedToUs || fromUs || isBulletinDest)
 
 					if keep {
 						// Use the third-party original source if present —
@@ -987,6 +1001,7 @@ func (s *Server) common(title string, r *http.Request) map[string]any {
 		"CustomTZ":         snap.Timezone != "" && !isCuratedTZ(snap.Timezone),
 		"St":               snap,
 		"RFConnected":      s.rf.Connected(),
+		"RFNotKISS":        s.rf.NotKISSDetected(),
 		"ISConnected":      s.is.Connected(),
 		"ISVerified":       s.is.Verification() == igate.VerificationVerified,
 		"ISUnverified":     s.is.Verification() == igate.VerificationUnverified,

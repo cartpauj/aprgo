@@ -1,0 +1,156 @@
+{{define "bulletins.html"}}{{template "header" .}}
+<section class="bulletins-page">
+  {{template "pageHead" (dict
+    "Eyebrow" "Broadcasts"
+    "Title"   "Bulletins"
+    "Lede"    "Numbered bulletins, sticky announcements, and NWS/SKYWARN weather alerts. Replaced by identifier (newer of same ID overwrites older). Bulletins never get acked.")}}
+
+  {{if .View.Offline}}
+  <div class="flash warn">
+    Offline mode — NWS / SKYWARN / CWA alerts arrive via APRS-IS. Switch to a non-offline mode to receive them; RF-side bulletins still appear below.
+  </div>
+  {{end}}
+  {{if .Flash}}<div class="flash ok flash-banner">{{.Flash}}</div>{{end}}
+  {{if .FlashErr}}<div class="flash err flash-banner">{{.FlashErr}}</div>{{end}}
+
+  {{if and (eq (printf "%s" .St.Mode) "advanced") .St.AllowSendBulletins .St.TXEnable}}
+  <details class="bulletins-compose">
+    <summary>📡 Send a bulletin</summary>
+    {{if and (not .RFConnected) (not .ISConnected)}}
+    <div class="flash err" style="margin-top:10px">
+      No carrier available — neither RF nor APRS-IS is connected. Sends will be rejected until one of them is up.
+    </div>
+    {{else if not .RFConnected}}
+    <div class="flash warn" style="margin-top:10px">
+      RF not connected — only APRS-IS sends will succeed.
+    </div>
+    {{else if not .ISConnected}}
+    <div class="flash warn" style="margin-top:10px">
+      APRS-IS not connected — only RF sends will succeed.
+    </div>
+    {{end}}
+    <form method="POST" action="/bulletins/send" class="bulletins-form" onsubmit="return confirm('Send this bulletin? Every station in RF range and many APRS-IS subscribers will see it.');">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <label>
+        <span class="label-head">Identifier (and optional group)</span>
+        <input type="text" name="id_group" placeholder="e.g. 1, 1ARES, AWX" required pattern="[0-9A-Za-z][A-Za-z0-9]{0,5}" maxlength="6" style="text-transform:uppercase">
+        <div class="hint">Single digit/letter required + up to 5 alphanumeric chars for the group. Same number replaces prior (BLN1 → newer overrides older).</div>
+      </label>
+      <label>
+        <span class="label-head">Body (max 67 chars)</span>
+        <textarea name="body" rows="2" maxlength="67" required></textarea>
+      </label>
+      <label>
+        <span class="label-head">Send via</span>
+        <select name="via">
+          <option value="both" {{if and (not .RFConnected) (not .ISConnected)}}disabled{{end}}>RF + APRS-IS (both)</option>
+          <option value="rf" {{if not .RFConnected}}disabled{{end}}>RF only</option>
+          <option value="is" {{if not .ISConnected}}disabled{{end}}>APRS-IS only</option>
+        </select>
+      </label>
+      <button type="submit" class="primary" {{if and (not .RFConnected) (not .ISConnected)}}disabled{{end}}>Send bulletin</button>
+      <div class="hint dim">5-minute cooldown per identifier prevents accidental double-sends. Bulletins are not acked; receivers display them in their bulletin view.</div>
+    </form>
+  </details>
+  {{end}}
+
+  {{/* ── NWS / SKYWARN / CWA — severe-weather alerts ── */}}
+  {{if .View.NWSEnabled}}
+    {{if or .View.NWS .View.SKY .View.CWA}}
+    <h2 class="bulletins-section-h">⚠ Weather alerts</h2>
+    {{range .View.NWS}}
+    <div class="bulletin bulletin-nws sev-{{.Severity}}">
+      <div class="bulletin-meta">
+        <span class="bulletin-sev sev-{{.Severity}}">{{.Severity}}</span>
+        <span class="bulletin-from"><a href="/stations/{{.Source}}">{{.Source}}</a></span>
+        <span class="bulletin-to">{{.DestLabel}}{{if .Product}} · <code>{{.Product}}</code>{{end}}</span>
+        <span class="bulletin-time">{{ago .Time}} ago</span>
+      </div>
+      <div class="bulletin-body">{{.Body}}</div>
+    </div>
+    {{end}}
+    {{range .View.SKY}}
+    <div class="bulletin bulletin-sky">
+      <div class="bulletin-meta">
+        <span class="bulletin-sev sev-info">SKYWARN</span>
+        <span class="bulletin-from"><a href="/stations/{{.Source}}">{{.Source}}</a></span>
+        <span class="bulletin-to">{{.DestLabel}}{{if .Office}} · {{.Office}}{{end}}</span>
+        <span class="bulletin-time">{{ago .Time}} ago</span>
+      </div>
+      <div class="bulletin-body">{{.Body}}</div>
+    </div>
+    {{end}}
+    {{range .View.CWA}}
+    <div class="bulletin bulletin-cwa">
+      <div class="bulletin-meta">
+        <span class="bulletin-sev sev-info">CWA</span>
+        <span class="bulletin-from"><a href="/stations/{{.Source}}">{{.Source}}</a></span>
+        <span class="bulletin-to">{{.DestLabel}}{{if .Office}} · {{.Office}}{{end}}</span>
+        <span class="bulletin-time">{{ago .Time}} ago</span>
+      </div>
+      <div class="bulletin-body">{{.Body}}</div>
+    </div>
+    {{end}}
+    {{end}}
+  {{end}}
+
+  {{/* ── Announcements (sticky, BLNA-Z) ── */}}
+  {{if .View.Announces}}
+  <h2 class="bulletins-section-h">📌 Announcements</h2>
+  {{range .View.Announces}}
+  <div class="bulletin bulletin-announce">
+    <div class="bulletin-meta">
+      <span class="bulletin-id">{{.DestLabel}}</span>
+      <span class="bulletin-from"><a href="/stations/{{.Source}}">{{.Source}}</a></span>
+      <span class="bulletin-time">{{ago .Time}} ago</span>
+    </div>
+    <div class="bulletin-body">{{.Body}}</div>
+  </div>
+  {{end}}
+  {{end}}
+
+  {{/* ── Numbered bulletins (BLN0-9) + group bulletins (BLN1ARES) ── */}}
+  {{if .View.Numbered}}
+  <h2 class="bulletins-section-h">📢 Bulletins</h2>
+  {{range .View.Numbered}}
+  <div class="bulletin bulletin-{{.Kind}}">
+    <div class="bulletin-meta">
+      <span class="bulletin-id">{{.DestLabel}}</span>
+      <span class="bulletin-from"><a href="/stations/{{.Source}}">{{.Source}}</a></span>
+      {{if .Group}}<span class="bulletin-group">group {{.Group}}</span>{{end}}
+      <span class="bulletin-time">{{ago .Time}} ago</span>
+    </div>
+    <div class="bulletin-body">{{.Body}}</div>
+  </div>
+  {{end}}
+  {{end}}
+
+  {{if not (or .View.NWS .View.SKY .View.CWA .View.Announces .View.Numbered)}}
+  <div class="empty-bulletins">
+    <div class="empty-eyebrow">Nothing here</div>
+    <p>No bulletins received in the last 24 hours.</p>
+    {{if .View.Offline}}<p class="dim">You're in offline mode, so NWS alerts won't arrive (they come via APRS-IS).</p>{{end}}
+    {{if .View.GroupList}}<p class="dim">Your group filter <code>{{.View.GroupList}}</code> may be hiding bulletins that don't match. Clear the list to receive all groups.</p>{{end}}
+  </div>
+  {{end}}
+
+  {{/* ── Subscription settings ── */}}
+  <details class="bulletins-settings" {{if .View.GroupList}}open{{end}}>
+    <summary>Subscription</summary>
+    <form method="POST" action="/bulletins/save" class="bulletins-form">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <label>
+        <span class="label-head">Bulletin groups</span>
+        <input type="text" name="groups" value="{{.View.GroupList}}" placeholder="ARES, SKYWARN, WX (comma-separated; empty = receive all)">
+        <div class="hint">Per APRS PROTOCOL.TXT: empty list receives every group bulletin. Listing specific groups (e.g. <code>ARES, SKYWARN</code>) keeps plain <code>BLN0</code>–<code>BLN9</code> always and filters group bulletins (<code>BLN1ARES</code>, <code>BLN2WX</code>) to only your listed groups.</div>
+      </label>
+      <label class="cb">
+        <input type="checkbox" name="nws_subscribed" value="1" {{if .View.NWSEnabled}}checked{{end}}>
+        Show NWS / SKYWARN / CWA weather bulletins
+      </label>
+      <div class="hint">Severe-weather alerts from APRS-IS WXSVR. Storage is always on; this only controls display so toggling on later shows the back-history.</div>
+      <button type="submit" class="primary">Save subscription</button>
+    </form>
+  </details>
+</section>
+{{template "footer" .}}{{end}}

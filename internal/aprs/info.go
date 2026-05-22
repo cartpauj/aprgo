@@ -326,6 +326,49 @@ func postProcess(d *Decoded) {
 		c = stripped
 	}
 
+	// !DAO! micro-precision extension per aprs.org/aprs12/datum.txt:
+	//   !<Datum><LatPrec><LonPrec>!
+	// Datum char (W=WGS84, etc) plus two precision bytes. Two encodings:
+	//   Uppercase: ASCII digit '0'-'9' → +d/10 of the last decoded
+	//              decimal-minute digit (1/1000 minute, ~18cm at equator).
+	//   Lowercase: base-91 char '!'-'{' (33-123) → +(c-33)/91 of the last
+	//              decimal-minute digit (~2cm precision).
+	// Found embedded anywhere in the comment by ~20-40% of modern radios
+	// (Kenwood TH-D74/75, Yaesu FTM-400/500, APRSdroid). Refine the existing
+	// lat/lon by the indicated extra precision and strip the marker.
+	if d.Lat != nil && d.Lon != nil {
+		if m := daoRegex.FindStringSubmatchIndex(c); m != nil {
+			match := c[m[0]:m[1]]
+			// match: "!D<lat><lon>!"
+			datum := match[1]
+			latByte := match[2]
+			lonByte := match[3]
+			latFrac, latOK := daoFraction(latByte)
+			lonFrac, lonOK := daoFraction(lonByte)
+			if latOK && lonOK {
+				// Extra precision applies to 1/100 of a minute (the last
+				// digit of the decoded position's decimal-minute pair).
+				// At 1/100 min = 0.01/60 deg per minute, the extra digit
+				// adds 0.01*frac/60 of a degree.
+				const minToDeg = 1.0 / 60.0
+				extraLat := 0.01 * latFrac * minToDeg
+				extraLon := 0.01 * lonFrac * minToDeg
+				if *d.Lat < 0 {
+					extraLat = -extraLat
+				}
+				if *d.Lon < 0 {
+					extraLon = -extraLon
+				}
+				newLat := *d.Lat + extraLat
+				newLon := *d.Lon + extraLon
+				d.Lat = &newLat
+				d.Lon = &newLon
+			}
+			_ = datum // we don't surface non-WGS84 datums; just consume the byte
+			c = strings.TrimSpace(c[:m[0]] + c[m[1]:])
+		}
+	}
+
 	// Compact base-91 telemetry per he.fi/doc/aprs-base91-comment-telemetry.txt:
 	//   |ssaaaaaaaa|        (seq + 1-5 analog channels, each 2 base-91 chars)
 	// Each 2-char pair encodes 0..8280 = (c0-33)*91 + (c1-33). Skip if the
@@ -394,7 +437,27 @@ var (
 	freqToneRegex = regexp.MustCompile(`\bT(\d{2,3})\b|\bD(\d{3})\b`)
 	// Offset: `+600` or `-600` (kHz). Bruninga freqspec.txt.
 	freqOffsetRegex = regexp.MustCompile(`(?:^|\s)([+-])(\d{3,4})(?:\s|$)`)
+	// !DAO! datum/precision extension per aprs12/datum.txt: 5 chars total,
+	// `!` + datum letter + lat-precision byte + lon-precision byte + `!`.
+	// Datum: uppercase (W, G, etc) or lowercase variants.
+	// Precision bytes: uppercase '0'-'9' (ASCII digit) or lowercase '!'-'{'
+	// (base-91 33-123). We accept the union of both byte classes here and
+	// validate the encoding inside daoFraction.
+	daoRegex = regexp.MustCompile(`!([A-Za-z])([!-{])([!-{])!`)
 )
+
+// daoFraction interprets one !DAO! precision byte. Returns (fraction in
+// [0,1), ok). Uppercase ASCII digits give d/10; lowercase base-91 chars
+// (range 33-123) give (c-33)/91.
+func daoFraction(b byte) (float64, bool) {
+	if b >= '0' && b <= '9' {
+		return float64(b-'0') / 10.0, true
+	}
+	if b >= 0x21 && b <= 0x7b {
+		return float64(b-33) / 91.0, true
+	}
+	return 0, false
+}
 
 // Mic-E status codes — single-char shorthand at end of comment.
 var miceStatusCodes = map[byte]string{
@@ -913,8 +976,30 @@ func decodeMicE(info, dest string, d *Decoded) {
 //	$GPRMC,hhmmss,A,llll.ll,N,yyyyy.yy,W,sss.s,ccc.c,ddmmyy,...*CS
 //	$GPGGA,hhmmss,llll.ll,N,yyyyy.yy,W,fix,nn,h.h,alt,M,...*CS
 func decodeNMEA(info string, d *Decoded) {
-	// Strip checksum tail if present (everything after `*`).
+	// Verify NMEA-0183 checksum if present. Format: `<body>*HH` where HH
+	// is the hex XOR of every byte between `$` and `*` (exclusive). RF
+	// corruption is real — aprs.fi validates and drops bad ones, we do
+	// the same so a garbled GPRMC doesn't get re-emitted to APRS-IS.
+	// A missing `*HH` (legitimate per spec — checksum is optional in
+	// APRS101) is accepted without check.
 	if star := strings.IndexByte(info, '*'); star > 0 {
+		if len(info) >= star+3 {
+			want, err := strconv.ParseUint(info[star+1:star+3], 16, 8)
+			if err == nil {
+				var got byte
+				// Skip leading `$` (not part of checksummed body).
+				start := 0
+				if len(info) > 0 && info[0] == '$' {
+					start = 1
+				}
+				for i := start; i < star; i++ {
+					got ^= info[i]
+				}
+				if got != byte(want) {
+					return // bad checksum — drop frame
+				}
+			}
+		}
 		info = info[:star]
 	}
 	fields := strings.Split(info, ",")

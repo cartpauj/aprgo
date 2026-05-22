@@ -14,12 +14,12 @@
     </div>
     <div class="stats-card">
       <div class="eyebrow">RF connection</div>
-      <div class="stats-big">{{if .RFConnected}}<span class="status-ok">● live</span>{{else}}<span class="status-err">○ down</span>{{end}}</div>
+      <div class="stats-big">{{if .RFConnected}}<span class="status-ok">● connected</span>{{else}}<span class="status-err">○ disconnected</span>{{end}}</div>
       <div class="stats-sub">{{comma .PktsRF}} RF packets parsed</div>
     </div>
     <div class="stats-card">
       <div class="eyebrow">APRS-IS</div>
-      <div class="stats-big">{{if .ISConnected}}<span class="status-ok">● live</span>{{else}}<span class="status-err">○ down</span>{{end}}</div>
+      <div class="stats-big">{{if .ISConnected}}<span class="status-ok">● connected</span>{{else}}<span class="status-err">○ disconnected</span>{{end}}</div>
       <div class="stats-sub">{{comma .PktsIS}} IS packets parsed</div>
     </div>
     <div class="stats-card">
