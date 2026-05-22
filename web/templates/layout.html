@@ -45,7 +45,7 @@
       <a href="/bulletins" {{if eq .Title "Bulletins"}}aria-current="page"{{end}}>Bulletins</a>
       <a href="/stations"  {{if or (eq .Title "Stations") (and (ge (len .Title) 8) (eq (slice .Title 0 8) "Station "))}}aria-current="page"{{end}}>Stations</a>
       <a href="/stats"     {{if eq .Title "Stats"}}aria-current="page"{{end}}>Stats</a>
-      <a href="/diagnostics" {{if eq .Title "Diagnostics"}}aria-current="page"{{end}}>Diag</a>
+      <a href="/logs" {{if eq .Title "Logs"}}aria-current="page"{{end}}>Logs</a>
       <a href="/settings"  {{if eq .Title "Settings"}}aria-current="page"{{end}}>Settings</a>
       <a href="/logout" class="nav-logout">Sign out</a>
     </nav>

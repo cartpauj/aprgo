@@ -19,7 +19,10 @@
     </div>
     <div class="stats-card">
       <div class="eyebrow">APRS-IS</div>
-      <div class="stats-big">{{if .ISConnected}}<span class="status-ok">● connected</span>{{else}}<span class="status-err">○ disconnected</span>{{end}}</div>
+      <div class="stats-big">{{if not .ISConnected}}{{if .ISLastError}}<span class="status-err">○ disconnected</span>{{else}}<span class="status-warn">● connecting</span>{{end}}
+        {{else if .ISUnverified}}<span class="status-warn">● unverified</span>
+        {{else if .ISVerified}}<span class="status-ok">● verified</span>
+        {{else}}<span class="status-warn">● connecting</span>{{end}}</div>
       <div class="stats-sub">{{comma .PktsIS}} IS packets parsed</div>
     </div>
     <div class="stats-card">

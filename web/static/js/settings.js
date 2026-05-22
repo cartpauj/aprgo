@@ -66,10 +66,11 @@
     var hidden = picker.querySelector(".beacon-symbol-value");
     var swatches = picker.querySelector(".beacon-symbol-swatches");
     var labelEl = picker.querySelector(".beacon-symbol-label");
+    var iconEl = picker.querySelector(".beacon-symbol-trigger-icon");
     var customIn = picker.querySelector(".beacon-symbol-custom");
     var current = hidden.value;
     var isCustom = current === "custom" || !SYMBOL_PRESETS.some(function (p) { return p.code === current; });
-    // Render preset swatches + a custom-toggle tile
+    // Popover: render preset swatches + a custom-toggle tile
     var html = "";
     for (var i = 0; i < SYMBOL_PRESETS.length; i++) {
       var p = SYMBOL_PRESETS[i];
@@ -84,21 +85,48 @@
       '<button type="button" class="beacon-symbol-swatch beacon-symbol-swatch-custom' + customSel + '"' +
       ' data-code="custom" title="Custom">✎</button>';
     swatches.innerHTML = html;
-    // Label + custom-input visibility
+    // Trigger: show the current symbol + label; custom input only when custom.
+    var displayCode = isCustom ? (customIn.value.length === 2 ? customIn.value : "") : current;
+    iconEl.innerHTML = displayCode ? spriteIconHTML(displayCode) : '<span class="beacon-symbol-trigger-placeholder">?</span>';
     if (isCustom) {
-      labelEl.textContent = customIn.value ? labelFor(customIn.value) : "Custom — type 2 chars below";
+      labelEl.textContent = customIn.value ? labelFor(customIn.value) : "Custom";
       customIn.style.display = "";
     } else {
       labelEl.textContent = labelFor(current);
       customIn.style.display = "none";
     }
   }
+  function closeAllPopovers(except) {
+    document.querySelectorAll(".beacon-symbol-picker").forEach(function (p) {
+      if (p === except) return;
+      var pop = p.querySelector(".beacon-symbol-popover");
+      var trig = p.querySelector(".beacon-symbol-trigger");
+      if (pop) pop.hidden = true;
+      if (trig) trig.setAttribute("aria-expanded", "false");
+    });
+  }
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest(".beacon-symbol-picker")) closeAllPopovers(null);
+  });
   function pickersIn(scope) {
     return scope.querySelectorAll(".beacon-symbol-picker");
   }
   pickersIn(beaconList).forEach(renderPicker);
 
-  // Delegated swatch-click: pick a preset, or toggle "Custom".
+  // Delegated trigger-click: toggle the popover. Closes any others first.
+  beaconList.addEventListener("click", function (e) {
+    var trig = e.target.closest(".beacon-symbol-trigger");
+    if (!trig) return;
+    e.preventDefault();
+    var picker = trig.closest(".beacon-symbol-picker");
+    var pop = picker.querySelector(".beacon-symbol-popover");
+    var willOpen = pop.hidden;
+    closeAllPopovers(willOpen ? picker : null);
+    pop.hidden = !willOpen;
+    trig.setAttribute("aria-expanded", willOpen ? "true" : "false");
+  });
+
+  // Delegated swatch-click: pick a preset, or toggle "Custom". Closes the popover.
   beaconList.addEventListener("click", function (e) {
     var btn = e.target.closest(".beacon-symbol-swatch");
     if (!btn) return;
@@ -110,15 +138,18 @@
     // Decode any &amp; from the data attribute back to & for the value
     code = code.replace(/&amp;/g, "&");
     hidden.value = code;
-    if (code === "custom") {
-      var customIn = picker.querySelector(".beacon-symbol-custom");
-      customIn.focus();
-    }
     renderPicker(picker);
+    // Close popover. If they picked Custom, leave focus on the text input.
+    var pop = picker.querySelector(".beacon-symbol-popover");
+    pop.hidden = true;
+    picker.querySelector(".beacon-symbol-trigger").setAttribute("aria-expanded", "false");
+    if (code === "custom") {
+      picker.querySelector(".beacon-symbol-custom").focus();
+    }
   });
 
-  // Custom-input → live update the hidden value + label as the operator
-  // types. Only commit when the input is exactly 2 valid chars.
+  // Custom-input → live update the hidden value + label + trigger icon as
+  // the operator types. Only commit a real code when input is exactly 2 chars.
   beaconList.addEventListener("input", function (e) {
     if (!e.target.matches(".beacon-symbol-custom")) return;
     var picker = e.target.closest(".beacon-symbol-picker");
@@ -126,11 +157,10 @@
     var v = e.target.value;
     if (v.length === 2) {
       picker.querySelector(".beacon-symbol-value").value = v;
-      picker.querySelector(".beacon-symbol-label").textContent = labelFor(v);
     } else {
       picker.querySelector(".beacon-symbol-value").value = "custom";
-      picker.querySelector(".beacon-symbol-label").textContent = "Custom — need exactly 2 chars";
     }
+    renderPicker(picker);
   });
 
   // Soft-delete: flip the hidden remove flag so the server drops the row on
@@ -161,28 +191,58 @@
   // sync with the {{range .BeaconViews}} block in settings.html.
   function beaconRowTemplate(i) {
     return (
-      '<legend>Beacon: new</legend>' +
-      '<input type="hidden" name="beacon_' + i + '_name" value="beacon' + i + '">' +
-      '<div class="beacon-row-grid">' +
-        '<label>Symbol' +
+      '<legend class="beacon-legend"><span class="beacon-legend-meta"><span>Every 30 min</span><span class="sep">·</span><span>direct</span></span></legend>' +
+      '<input type="hidden" name="beacon_' + i + '_remove" value="0" class="beacon-remove-flag">' +
+      '<div class="beacon-head">' +
+        '<label class="beacon-head-name-label">Name' +
+          '<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Local identifier only — not transmitted on air. The over-the-air packet identifies your station by Callsign-SSID, Symbol, and Comment. The name is used internally to track scheduling (last-fired time), as the key for "Fire now" actions, and in logs.</span></span>' +
+          '<input type="text" class="beacon-head-name" name="beacon_' + i + '_name" value="beacon' + i + '" size="16" maxlength="32" pattern="[A-Za-z0-9_-]+" required title="Letters, digits, dash, underscore; must be unique">' +
+        '</label>' +
+        '<div class="beacon-head-actions">' +
+          '<label class="cb"><input type="checkbox" name="beacon_' + i + '_enabled" value="1" checked> Enabled</label>' +
+          '<label class="cb"><input type="checkbox" name="beacon_' + i + '_messages" value="1" checked> Messaging-capable</label>' +
+          '<button type="button" class="btn ghost beacon-remove">Remove</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="beacon-body">' +
+        '<label class="beacon-symbol-row">Symbol' +
           '<div class="beacon-symbol-picker" data-idx="' + i + '">' +
             '<input type="hidden" name="beacon_' + i + '_symbol" class="beacon-symbol-value" value="I&amp;">' +
-            '<div class="beacon-symbol-swatches"></div>' +
-            '<div class="beacon-symbol-label"></div>' +
-            '<input type="text" class="beacon-symbol-custom" name="beacon_' + i + '_symbol_custom" placeholder="2 chars (e.g. /j)" maxlength="2" minlength="2" pattern="..">' +
+            '<div class="beacon-symbol-trigger-row">' +
+              '<button type="button" class="beacon-symbol-trigger" aria-haspopup="true" aria-expanded="false">' +
+                '<span class="beacon-symbol-trigger-icon"></span>' +
+                '<span class="beacon-symbol-label"></span>' +
+                '<span class="beacon-symbol-caret" aria-hidden="true">▾</span>' +
+              '</button>' +
+              '<input type="text" class="beacon-symbol-custom" name="beacon_' + i + '_symbol_custom" placeholder="2 chars (e.g. /j)" maxlength="2" minlength="2" pattern="..">' +
+            '</div>' +
+            '<div class="beacon-symbol-popover" hidden><div class="beacon-symbol-swatches"></div></div>' +
           '</div>' +
         '</label>' +
-        '<label>Comment<input type="text" name="beacon_' + i + '_comment" placeholder="aprgo status" maxlength="43"></label>' +
-        '<label>Path<input type="text" name="beacon_' + i + '_path" placeholder="WIDE2-1"></label>' +
-        '<label>Interval (minutes, min 10)<input type="number" name="beacon_' + i + '_every_min" value="30" min="10" max="1440"></label>' +
-        '<label>Callsign override<input type="text" name="beacon_' + i + '_callsign" placeholder="(uses station callsign)" pattern="[A-Za-z0-9-]*"></label>' +
+        '<label class="beacon-comment">Comment' +
+          '<div class="comment-row">' +
+            '<input type="text" id="beacon-comment-' + i + '" name="beacon_' + i + '_comment" placeholder="aprgo status" maxlength="43">' +
+            '<button type="button" class="btn ghost comment-helpers-btn" data-target="beacon-comment-' + i + '" title="Open structured-field composer">Helpers</button>' +
+          '</div>' +
+        '</label>' +
       '</div>' +
-      '<div class="beacon-row-foot">' +
-        '<label class="cb"><input type="checkbox" name="beacon_' + i + '_enabled" value="1" checked> Enabled</label>' +
-        '<label class="cb"><input type="checkbox" name="beacon_' + i + '_messages" value="1" checked> Messaging-capable</label>' +
-        '<button type="button" class="btn ghost beacon-remove">Remove beacon</button>' +
-        '<input type="hidden" name="beacon_' + i + '_remove" value="0" class="beacon-remove-flag">' +
-      '</div>'
+      '<details class="beacon-advanced">' +
+        '<summary>Advanced — path, interval, callsign override, ambiguity</summary>' +
+        '<div class="beacon-advanced-body">' +
+          '<label>Path<input type="text" name="beacon_' + i + '_path" placeholder="WIDE2-1"></label>' +
+          '<label>Interval (min)<input type="number" name="beacon_' + i + '_every_min" value="30" min="10" max="1440"></label>' +
+          '<label>Callsign override<input type="text" name="beacon_' + i + '_callsign" placeholder="(uses station callsign)" pattern="[A-Za-z0-9-]*"></label>' +
+          '<label>Position ambiguity' +
+            '<select name="beacon_' + i + '_ambiguity">' +
+              '<option value="0" selected>0 — full precision (~18 m)</option>' +
+              '<option value="1">1 — ~185 m</option>' +
+              '<option value="2">2 — ~1.8 km</option>' +
+              '<option value="3">3 — ~18 km</option>' +
+              '<option value="4">4 — ~111 km (degree-only)</option>' +
+            '</select>' +
+          '</label>' +
+        '</div>' +
+      '</details>'
     );
   }
 })();

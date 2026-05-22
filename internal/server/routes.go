@@ -57,8 +57,9 @@ func (s *Server) routes() http.Handler {
 	a.HandleFunc("/settings", s.handleSettings)
 	a.HandleFunc("/settings/save", s.handleSettingsSave)
 	a.HandleFunc("/settings/password", s.handleChangePassword)
-	a.HandleFunc("/diagnostics", s.handleDiagnostics)
-	a.HandleFunc("/diagnostics/rows", s.handleDiagnosticsRows)
+	a.HandleFunc("/logs", s.handleDiagnostics)
+	a.HandleFunc("/logs/rows", s.handleDiagnosticsRows)
+	a.HandleFunc("/logs/tail", s.handleDiagnosticsLog)
 	a.HandleFunc("/stats", s.handleStats)
 	// Wizard routes
 	a.HandleFunc("/setup", s.wizardStart)
@@ -192,13 +193,21 @@ func (s *Server) dashboardStatusCards(snap state.State) []statusCard {
 		isConn := s.is.Connected()
 		switch {
 		case !isConn:
-			isCard = statusCard{Label: "APRS-IS", Tone: "err", Value: "● disconnected"}
+			// Distinguish "we just started and haven't reached the server
+			// yet" (no error history → still connecting) from "we tried
+			// and failed, currently in backoff" (last error recorded →
+			// disconnected). Same convention used by settings + stats.
+			if lastErr, _ := s.is.LastError(); lastErr == "" {
+				isCard = statusCard{Label: "APRS-IS", Tone: "warn", Value: "● connecting", Sub: snap.Callsign}
+			} else {
+				isCard = statusCard{Label: "APRS-IS", Tone: "err", Value: "● disconnected"}
+			}
 		case s.is.Verification() == igate.VerificationUnverified:
 			isCard = statusCard{Label: "APRS-IS", Tone: "warn", Value: "● unverified", Sub: snap.Callsign}
 		case s.is.Verification() == igate.VerificationVerified:
 			isCard = statusCard{Label: "APRS-IS", Tone: "ok", Value: "● verified", Sub: snap.Callsign}
 		default:
-			isCard = statusCard{Label: "APRS-IS", Tone: "ok", Value: "● connecting", Sub: snap.Callsign}
+			isCard = statusCard{Label: "APRS-IS", Tone: "warn", Value: "● connecting", Sub: snap.Callsign}
 		}
 	}
 
@@ -1407,19 +1416,47 @@ func (s *Server) handleMessageSend(w http.ResponseWriter, r *http.Request) {
 // to-us, recipient-not-heard-on-RF, etc.) without grepping the journal or
 // reading source.
 func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
-	data := s.common("Diagnostics", r)
+	data := s.common("Logs", r)
 	data["Drops"] = s.drops.snapshot()
 	data["Blocked"] = s.srcLimiter.BlockedSources()
+	data["LogLines"] = s.recentLogLines(20)
 	s.render(w, "diagnostics.html", data)
+}
+
+// recentLogLines returns the most recent n log lines newest-first.
+// Empty slice if logBuf isn't wired (tests, etc).
+func (s *Server) recentLogLines(n int) []LogLine {
+	if s.logBuf == nil {
+		return nil
+	}
+	lines := s.logBuf.Snapshot()
+	if n > len(lines) {
+		n = len(lines)
+	}
+	out := make([]LogLine, 0, n)
+	for i := len(lines) - 1; i >= len(lines)-n; i-- {
+		out = append(out, lines[i])
+	}
+	return out
 }
 
 // handleDiagnosticsRows returns just the rows fragment so the page can poll
 // every few seconds without rerendering the chrome.
 func (s *Server) handleDiagnosticsRows(w http.ResponseWriter, r *http.Request) {
-	data := s.common("Diagnostics", r)
+	data := s.common("Logs", r)
 	data["Drops"] = s.drops.snapshot()
 	data["Blocked"] = s.srcLimiter.BlockedSources()
 	renderFragment(w, r, s.tmpl, "diagRows", data)
+}
+
+// handleDiagnosticsLog returns just the log <pre> fragment so the page's
+// log panel can refresh its contents on its own HTMX poll without
+// swapping the outer <details> element (which would reset the operator's
+// expand/collapse choice).
+func (s *Server) handleDiagnosticsLog(w http.ResponseWriter, r *http.Request) {
+	data := s.common("Logs", r)
+	data["LogLines"] = s.recentLogLines(20)
+	renderFragment(w, r, s.tmpl, "diagLog", data)
 }
 
 // handleSettings shows the consolidated settings page.
@@ -1588,6 +1625,16 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		flash(w, false, err.Error())
 		return
 	}
+	// Drop any in-progress wizard drafts so the next /setup visit
+	// reflects what we just committed instead of replaying the operator's
+	// pre-save state. Without this, a setting changed here (e.g. Allow
+	// Bulletins) would still show its old value in the wizard's advanced-
+	// flags step until the 30-min draft TTL aged it out.
+	s.wmu.Lock()
+	for k := range s.wdrafts {
+		delete(s.wdrafts, k)
+	}
+	s.wmu.Unlock()
 	flash(w, true, "Saved.")
 }
 

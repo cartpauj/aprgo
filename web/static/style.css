@@ -1217,30 +1217,25 @@ body.view-raw .pkt .raw-line    { display: inline; }
 .settings-section-head {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   padding: var(--gap-3) var(--gap-5);
   border-bottom: 1px solid var(--border);
-  background: var(--panel-2);
+  /* Removed the panel-2 background tint — was too heavy, made each
+     section head look like a separate widget rather than a card heading. */
 }
 .settings-section-head .title {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-weight: 600;
-  letter-spacing: 0.06em;
-  font-size: 0.9rem;
+  font-size: 1.05rem;
   color: var(--fg-strong);
-}
-.settings-section-head .title .num {
-  color: var(--muted);
-  font-size: 0.75rem;
-  margin-right: 8px;
-  letter-spacing: 0.14em;
+  letter-spacing: -0.005em;
 }
 .settings-section-head .sub {
-  font-size: 0.78rem;
+  font-size: 0.82rem;
   color: var(--muted);
   font-family: var(--font-sans);
   letter-spacing: 0.005em;
-  line-height: 1.4;
+  line-height: 1.45;
 }
 .settings-section-body {
   padding: var(--gap-5);
@@ -2055,16 +2050,8 @@ body.view-raw .pkt .raw-line    { display: inline; }
     padding: 10px var(--gap-3);
     gap: 2px;
   }
-  .settings-section-head .title { font-size: 0.84rem; }
-  .settings-section-head .title .num {
-    background: rgba(var(--accent-rgb), 0.08);
-    color: var(--accent);
-    padding: 1px 6px;
-    border-radius: 2px;
-    margin-right: 6px;
-    letter-spacing: 0.08em;
-  }
-  .settings-section-head .sub { font-size: 0.74rem; line-height: 1.35; }
+  .settings-section-head .title { font-size: 0.98rem; }
+  .settings-section-head .sub { font-size: 0.76rem; line-height: 1.35; }
   .settings-section-body { padding: var(--gap-3); }
   .settings-section-body .row { gap: var(--gap-2); }
 
@@ -2073,10 +2060,10 @@ body.view-raw .pkt .raw-line    { display: inline; }
   .mode-flag-chips { gap: 4px; }
   .flag-chip { padding: 2px 8px 2px 6px; font-size: 0.66rem; }
 
-  /* Beacon row foot — remove button drops below the checkboxes
-     instead of fighting them for horizontal space. */
-  .beacon-row-foot { gap: var(--gap-2); }
-  .beacon-row-foot .beacon-remove { margin-left: 0; align-self: flex-start; }
+  /* Beacon two-tier card — collapse to single column on phones. */
+  .beacon-head { flex-wrap: wrap; }
+  .beacon-head-actions { width: 100%; justify-content: space-between; }
+  .beacon-body { grid-template-columns: 1fr; gap: var(--gap-3); }
 
   /* Collapsible Account section — chevron tight to right edge. */
   .settings-section--collapsible > summary { padding-right: 36px; }
@@ -2453,15 +2440,17 @@ html, body { overflow-x: hidden; }
 .beacons-body   { gap: var(--gap-4); }
 .beacon-list    { display: flex; flex-direction: column; gap: var(--gap-4); }
 
-/* Beacon row — was a fieldset full of inline-styled grids. */
+/* Beacon row — two-tier card. Primary fields (symbol, comment) visible;
+   secondary fields (path, interval, callsign, ambiguity, messaging) live
+   inside a collapsible <details> to lower cognitive load on typical edit. */
 .beacon-row {
   position: relative;
   border: 1px solid var(--border);
   border-radius: var(--r-2);
-  padding: var(--gap-3);
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--gap-3);
+  background: var(--panel);
 }
 .beacon-row legend {
   padding: 0 8px;
@@ -2471,25 +2460,110 @@ html, body { overflow-x: hidden; }
   text-transform: uppercase;
   color: var(--muted);
 }
-.beacon-row-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: var(--gap-3);
+.beacon-legend-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: var(--muted);
 }
-.beacon-row-foot {
+.beacon-legend-meta .sep { color: var(--border-strong); }
+.beacon-head {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
   gap: var(--gap-3);
+  padding: var(--gap-3);
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  border-radius: calc(var(--r-2) - 1px) calc(var(--r-2) - 1px) 0 0;
 }
-.beacon-row-foot .beacon-remove {
-  color: var(--err);
-  font-size: 0.85rem;
-  /* Push the remove button to the far right; the two checkboxes stay
-     clustered together on the left rather than being stretched across
-     the row by justify-content: space-between. */
-  margin-left: auto;
+.beacon-head .beacon-head-actions { margin-left: auto; }
+.beacon-head-name-label {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  align-self: flex-start;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
+.beacon-head-name {
+  flex: 0 0 auto;
+  width: 16em;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  padding: 3px 8px;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.beacon-head-name:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.beacon-head-name:invalid { border-color: var(--err); }
+.beacon-head-actions { display: flex; align-items: center; gap: var(--gap-3); }
+.beacon-head-actions .beacon-remove { color: var(--err); }
+
+.beacon-body {
+  padding: var(--gap-3);
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) 1fr;
+  gap: var(--gap-4);
+  align-items: start;
+}
+.beacon-body .beacon-symbol-row { margin: 0; }
+.beacon-body .beacon-comment { display: flex; flex-direction: column; gap: 4px; }
+
+.beacon-advanced { border-top: 1px solid var(--border); }
+.beacon-advanced > summary {
+  cursor: pointer;
+  padding: var(--gap-2) var(--gap-3);
+  background: var(--panel-2);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  list-style: none;
+}
+.beacon-advanced > summary::-webkit-details-marker { display: none; }
+.beacon-advanced > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 120ms;
+}
+.beacon-advanced[open] > summary { color: var(--accent); }
+.beacon-advanced[open] > summary::before { transform: rotate(90deg); }
+.beacon-advanced:not([open]) > summary { border-radius: 0 0 calc(var(--r-2) - 1px) calc(var(--r-2) - 1px); }
+.beacon-advanced[open] > summary + .beacon-advanced-body { border-radius: 0 0 calc(var(--r-2) - 1px) calc(var(--r-2) - 1px); }
+.beacon-advanced-body {
+  padding: var(--gap-3);
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--gap-3);
+  border-top: 1px solid var(--border);
+}
+@media (max-width: 720px) {
+  .beacon-advanced-body { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 420px) {
+  .beacon-advanced-body { grid-template-columns: 1fr; }
+}
+
 .beacon-add-row { display: flex; gap: var(--gap-3); align-items: center; flex-wrap: wrap; }
 
 /* ─── Station detail additions ────────────────────────────────────────── */
@@ -3406,16 +3480,6 @@ html.theme-light .chat-thread, html.theme-auto .chat-thread { background: var(--
 }
 .leaflet-tooltip.filter-label::before { display: none !important; }
 
-/* ─── Beacon-row "Last fired" indicator ──────────────────────────────── */
-.beacon-last-fired {
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-  margin-bottom: var(--gap-2);
-  font-style: italic;
-}
-
 /* ─── Diagnostics page (gate drops) ──────────────────────────────────── */
 .data-table.diag .drop-reason {
   font-family: var(--font-mono);
@@ -3435,7 +3499,49 @@ html.theme-light .chat-thread, html.theme-auto .chat-thread { background: var(--
 }
 
 /* ─── Beacon symbol visual picker ─────────────────────────────────────── */
-.beacon-symbol-picker { display: flex; flex-direction: column; gap: 8px; }
+.beacon-symbol-picker { position: relative; display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.beacon-symbol-trigger-row { display: flex; align-items: stretch; gap: 6px; flex-wrap: wrap; }
+.beacon-symbol-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px 4px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-2);
+  background: var(--panel);
+  cursor: pointer;
+  font: 500 0.85rem/1 var(--font-sans);
+  color: var(--fg);
+  flex: 0 0 auto;
+  width: auto;
+  max-width: 100%;
+  transition: border-color 0.12s, background 0.12s;
+}
+.beacon-symbol-trigger:hover { border-color: var(--accent); background: var(--panel-2); }
+.beacon-symbol-trigger[aria-expanded="true"] { border-color: var(--accent); background: var(--panel-2); }
+.beacon-symbol-trigger-icon { display: inline-grid; place-items: center; width: 28px; height: 28px; flex: 0 0 28px; }
+.beacon-symbol-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 14em; }
+.beacon-symbol-trigger-placeholder {
+  font-family: var(--font-mono); color: var(--muted); font-size: 1rem;
+}
+.beacon-symbol-caret { color: var(--muted); font-size: 0.7rem; }
+.beacon-symbol-picker .beacon-symbol-custom { width: 8em; }
+
+.beacon-symbol-popover {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  z-index: 20;
+  padding: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-2);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  min-width: 220px;
+}
+.beacon-symbol-popover[hidden] { display: none; }
+
 .beacon-symbol-swatches { display: flex; flex-wrap: wrap; gap: 4px; }
 .beacon-symbol-swatch {
   position: relative;
@@ -3462,22 +3568,21 @@ html.theme-light .chat-thread, html.theme-auto .chat-thread { background: var(--
 }
 .beacon-symbol-swatch-custom.is-selected { color: var(--btn-fg); background: var(--accent); }
 .beacon-symbol-label {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  letter-spacing: 0.04em;
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
   color: var(--fg);
 }
 
 /* ─── Mode-managed-settings note (Settings page) ─────────────────────── */
+/* Flattened — no boxed sub-card. Just a label-row hinting at the mode
+   followed by the chip badges. Was previously a dashed-border boxed
+   widget that read as a foreign element among plain cards. */
 .mode-managed-note {
-  background: var(--panel-overlay);
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--r-2);
-  padding: var(--gap-3) var(--gap-4);
+  padding: 0;
   font-size: 0.88rem;
-  /* When sitting inside .flags-grid (2-col layout), span both columns so
-     the chips inside still get the full width to flex-wrap across. */
   grid-column: 1 / -1;
+  background: transparent;
+  border: 0;
 }
 .mode-managed-note .eyebrow { display: block; margin-bottom: 6px; }
 .mode-managed-note p { margin: 0 0 var(--gap-3); color: var(--muted); }
@@ -3624,6 +3729,48 @@ html.theme-light .chat-thread, html.theme-auto .chat-thread { background: var(--
 }
 .diag-blocked-list a { font-family: var(--font-mono); }
 
+/* Diagnostics log panel — collapsible <details> showing the in-memory
+   tail of log lines (200-deep ring fed by log.SetOutput). Polled along
+   with the rest of the diag page via HTMX every 5 s. */
+.diag-log {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  padding: 0;
+  margin-top: var(--gap-5);
+  margin-bottom: var(--gap-4);
+}
+.diag-log > summary {
+  cursor: pointer;
+  padding: 10px 16px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-strong);
+  user-select: none;
+}
+.diag-log > summary:hover { color: var(--accent); }
+.diag-log-pre {
+  margin: 0;
+  padding: 8px 16px 14px;
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--fg);
+  max-height: 360px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.diag-log-line { display: block; }
+.diag-log-time {
+  color: var(--muted);
+  margin-right: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ─── Bulletins page ────────────────────────────────────────────────── */
 .bulletins-page { display: flex; flex-direction: column; gap: var(--gap-3); }
 .bulletins-section-h {
@@ -3737,4 +3884,196 @@ html.theme-light .chat-thread, html.theme-auto .chat-thread { background: var(--
   width: 100%;
   padding: 6px 10px;
   font-family: var(--font-sans);
+}
+
+/* ─── Comment composer modal ──────────────────────────────────────── */
+.comment-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+.comment-row input[type="text"] { flex: 1; }
+.comment-helpers-btn {
+  flex: 0 0 auto;
+  padding: 0 12px;
+  font-size: 0.82rem;
+}
+.comment-composer {
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  background: var(--panel);
+  color: var(--fg);
+  padding: 0;
+  max-width: 880px;
+  width: 92vw;
+}
+.comment-composer::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+.comment-composer-form {
+  padding: 20px 24px 18px;
+  display: grid;
+  /* 2-column layout for the field sections so the dialog isn't a tall
+     scrolling tower. The header, intro, and actions span both columns. */
+  grid-template-columns: 1fr 1fr;
+  gap: 16px 20px;
+}
+.comment-composer-form > h2,
+.comment-composer-form > .cc-intro,
+.comment-composer-form > .cc-preview,
+.comment-composer-form > .comment-composer-actions {
+  grid-column: 1 / -1;
+}
+.cc-preview {
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cc-preview-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.cc-preview-label {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.cc-preview-count {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.cc-preview-count.is-over { color: var(--err); font-weight: 600; }
+.cc-preview-text {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--fg);
+  word-break: break-word;
+  min-height: 1.4em;
+}
+.cc-preview-warn {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--err);
+}
+.comment-composer-form > h2 {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 1.15rem;
+  text-transform: none;
+  letter-spacing: -0.005em;
+  color: var(--fg-strong);
+}
+.cc-intro {
+  margin: -4px 0 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.cc-intro strong { color: var(--fg-strong); font-weight: 600; }
+.cc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--panel-overlay);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+}
+.cc-field--wide { grid-column: 1 / -1; }
+/* Head: checkbox + name + format, all on one line. Override base label's
+   flex-direction:column. */
+.cc-field-head {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--fg-strong);
+  text-transform: none;
+  letter-spacing: normal;
+  cursor: pointer;
+  user-select: none;
+}
+.cc-field-head input[type="checkbox"] { margin: 0; flex: 0 0 auto; }
+.cc-field-name { font-weight: 600; flex: 1 1 auto; }
+.cc-field-fmt {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--muted);
+  background: var(--panel);
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  white-space: nowrap;
+}
+/* Body holds the inputs + example. Collapse to nothing unless the head's
+   checkbox is checked (CSS :has() — modern evergreen browsers). */
+.cc-field-body { display: none; }
+.cc-field:has(.cc-field-head input[type="checkbox"]:checked) .cc-field-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cc-field-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.cc-field-inputs > label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 500;
+  flex: 1 1 100px;
+  min-width: 80px;
+}
+.cc-field-inputs > label > input,
+.cc-field-inputs > label > select {
+  padding: 5px 7px;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.cc-field-inputs > label .normal {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.cc-field-example {
+  margin: 0;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.cc-field-example code { font-size: 0.78em; padding: 1px 5px; }
+.comment-composer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+@media (max-width: 720px) {
+  .comment-composer-form {
+    grid-template-columns: 1fr;
+  }
 }

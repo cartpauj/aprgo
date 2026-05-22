@@ -35,6 +35,9 @@ type Options struct {
 	Listen    string
 	StatePath string
 	DBPath    string
+	// LogBuffer is the in-memory ring of recent log lines surfaced on
+	// the diagnostics page. nil = no log panel rendered.
+	LogBuffer *LogBuffer
 }
 
 // Server is the long-lived application instance.
@@ -104,6 +107,10 @@ type Server struct {
 	// Per-source rate limiter for gating/digipeating decisions — drops
 	// over-rate sources so a misbehaving station doesn't get amplified.
 	srcLimiter *sourceRateLimiter
+
+	// In-memory log-line ring, populated via log.SetOutput in main; surfaced
+	// on the diagnostics page. May be nil if the caller didn't provide one.
+	logBuf *LogBuffer
 
 	// In-memory counters surfaced on /stats.
 	stats *statsCounters
@@ -185,6 +192,7 @@ func New(opts Options) (*Server, error) {
 		rf:      rf.New(st, b),
 		tmpl:    tmpl,
 		static:  staticMap,
+		logBuf:  opts.LogBuffer,
 		// 30s matches APRS-IS reference (javAPRSSrvr) — collapses multi-digi
 		// receipts of the same content without swallowing intentional resends.
 		dupe:        newDupeTable(30 * time.Second),

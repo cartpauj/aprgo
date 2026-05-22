@@ -38,6 +38,12 @@ func main() {
 	} else {
 		log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	}
+	// Tee log output to an in-memory ring buffer the diagnostics page can
+	// surface. journald (or whatever was writing to stderr) still gets
+	// everything via the MultiWriter; nothing about external logging
+	// changes.
+	logBuf := server.NewLogBuffer(200)
+	log.SetOutput(logBuf.Tee(os.Stderr))
 	igate.SetVersion(Version)
 	server.SetVersion(Version)
 	log.Printf("aprgo %s starting (listen=%s state=%s db=%s)", Version, *listen, *statePath, *dbPath)
@@ -46,6 +52,7 @@ func main() {
 		Listen:    *listen,
 		StatePath: *statePath,
 		DBPath:    *dbPath,
+		LogBuffer: logBuf,
 	})
 	if err != nil {
 		log.Fatalf("server init: %v", err)

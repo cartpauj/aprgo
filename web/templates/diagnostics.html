@@ -1,17 +1,33 @@
 {{define "diagnostics.html"}}{{template "header" .}}
 <section>
   {{template "pageHead" (dict
-    "Eyebrow" "Gate decisions · last 100"
-    "Title"   "Diagnostics"
-    "Lede"    "Every packet the gate decided to drop, with the reason. Drops include IS-firehose entries that never make it to the dashboard (most APRS-IS traffic is filtered out before display) — this page is your window into that filtering. Live-updates every 5s.")}}
+    "Eyebrow" "Operator visibility"
+    "Title"   "Logs"
+    "Lede"    "Live view into what aprgo is doing: which packets the gate dropped (and why), which stations are currently rate-limited, and the tail of the application log. Live-updates every 5s.")}}
 
   {{template "diagRows" .}}
+
+  {{/* Log panel lives outside the polled .diag-wrap so the <details>
+       open/closed state is preserved across HTMX swaps. Only the inner
+       <pre> contents poll for new lines. */}}
+  <details class="diag-log" open>
+    <summary>Application log <span class="dim">· last 20 lines · newest first</span></summary>
+    {{template "diagLog" .}}
+  </details>
 </section>
 {{template "footer" .}}{{end}}
 
+{{define "diagLog"}}
+<pre class="diag-log-pre"
+     hx-get="/logs/tail"
+     hx-trigger="every 5s"
+     hx-swap="outerHTML">{{range .LogLines}}<span class="diag-log-line"><span class="diag-log-time">{{fmtClock .Time $.TZ $.TF}}</span> {{.Message}}</span>
+{{end}}</pre>
+{{end}}
+
 {{define "diagRows"}}
 <div class="diag-wrap"
-     hx-get="/diagnostics/rows"
+     hx-get="/logs/rows"
      hx-trigger="every 5s"
      hx-swap="outerHTML">
   {{if .Blocked}}

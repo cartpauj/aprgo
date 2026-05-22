@@ -6,7 +6,7 @@
     "Lede"    "All of aprgo's configuration in one place.")}}
 
   {{if and .ISUnverified (not .St.OfflineMode)}}<div class="flash err">
-    ⚠ APRS-IS rejected your passcode for callsign <code>{{.St.Callsign}}</code>. You're connected but every packet we send is being silently dropped (qAX'd) by the server. Generate the correct passcode for your callsign at <a href="https://apps.magicbug.co.uk/passcode/" target="_blank" rel="noopener">apps.magicbug.co.uk/passcode</a>, then update the <a href="#passcode-field">passcode field</a> in section 01 below and save.
+    ⚠ APRS-IS rejected your passcode for callsign <code>{{.St.Callsign}}</code>. You're connected but every packet we send is being silently dropped (qAX'd) by the server. Generate the correct passcode for your callsign at <a href="https://apps.magicbug.co.uk/passcode/" target="_blank" rel="noopener">apps.magicbug.co.uk/passcode</a>, then update the <a href="#passcode-field">passcode field</a> below and save.
   </div>{{end}}
   {{if and .ISLastError (not .ISConnected) (not .St.OfflineMode)}}<div class="flash err">
     APRS-IS disconnected. Last error: <code>{{.ISLastError}}</code>
@@ -21,15 +21,15 @@
   <form class="settings-form" hx-post="/settings/save" hx-target="#save-flash" hx-swap="innerHTML">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
 
-    {{template "settingsSectionOpen" (dict "Num" "01" "Title" "Identity" "Sub" "Your callsign-SSID and APRS-IS passcode." "BodyClass" "grid-cols-fit")}}
-      <label>Callsign
+    {{template "settingsSectionOpen" (dict "Title" "Identity" "Sub" "Your callsign-SSID and APRS-IS passcode." "BodyClass" "grid-cols-fit")}}
+      <label><span class="label-head">Callsign<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Your government-issued amateur radio callsign (1–6 alphanumeric chars). APRS-IS will reject unlicensed callsigns and trial calls like <code>N0CALL</code>. Used as the source address on every packet aprgo transmits.</span></span></span>
         <input type="text" name="callsign_base" value="{{callsignBase .St.Callsign}}" placeholder="N0CALL" maxlength="6" required pattern="[A-Za-z0-9]{1,6}" style="text-transform:uppercase">
       </label>
-      <label>SSID
+      <label><span class="label-head">SSID<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Numeric suffix (0–15) appended to your callsign as <code>CALL-N</code>, used to identify station type. Convention: <code>-0</code> primary fixed, <code>-9</code> mobile, <code>-7</code> HT, <code>-10</code> iGate, <code>-13</code> weather. Lets you run multiple stations under one callsign without colliding on air.</span></span></span>
         <select name="callsign_ssid">
           {{$cur := callsignSSID .St.Callsign}}
           {{range $n := (intSeq 0 15)}}
-            <option value="{{$n}}" {{if eq (printf "%d" $n) $cur}}selected{{end}}>{{$n}}{{if eq $n 10}} — iGate{{else if eq $n 9}} — mobile{{else if eq $n 7}} — HT{{else if eq $n 1}} — digi{{end}}</option>
+            <option value="{{$n}}" {{if eq (printf "%d" $n) $cur}}selected{{end}}>{{$n}}{{if eq $n 0}} — primary station (fixed, message-capable){{else if eq $n 1}} — generic additional (digi, mobile, wx){{else if eq $n 2}} — generic additional (digi, mobile, wx){{else if eq $n 3}} — generic additional (digi, mobile, wx){{else if eq $n 4}} — generic additional (digi, mobile, wx){{else if eq $n 5}} — other networks (D-Star, smartphones){{else if eq $n 6}} — special activity (satellite, camping, 6m){{else if eq $n 7}} — HT / human-portable{{else if eq $n 8}} — boats, RVs, secondary mobile{{else if eq $n 9}} — primary mobile (message-capable){{else if eq $n 10}} — internet (iGate, EchoLink, Winlink){{else if eq $n 11}} — balloons, aircraft, spacecraft{{else if eq $n 12}} — APRStt, DTMF, RFID, 1-way trackers{{else if eq $n 13}} — weather station{{else if eq $n 14}} — truckers / full-time drivers{{else if eq $n 15}} — generic additional (digi, mobile, wx){{end}}</option>
           {{end}}
         </select>
       </label>
@@ -39,7 +39,7 @@
       </label>
     {{template "settingsSectionClose" .}}
 
-    {{template "settingsSectionOpen" (dict "Num" "02" "Title" "Position & mode" "Sub" "Where your station is and how it behaves on the air.")}}
+    {{template "settingsSectionOpen" (dict "Title" "Position & mode" "Sub" "Where your station is and how it behaves on the air.")}}
       <div class="inline-fields">
         <div class="dim mono-num">{{if or .St.Lat .St.Lon}}{{printf "%.5f, %.5f" .St.Lat .St.Lon}}{{else}}not set{{end}}</div>
         <a href="/setup/location" class="btn ghost">Change location…</a>
@@ -49,7 +49,7 @@
       </div>
     {{template "settingsSectionClose" .}}
 
-    {{template "settingsSectionOpen" (dict "Num" "03" "Title" "Gating + Digipeating" "Sub" "What aprgo does between RF and APRS-IS." "BodyClass" "stack-3")}}
+    {{template "settingsSectionOpen" (dict "Title" "Gating + Digipeating" "Sub" "What aprgo does between RF and APRS-IS." "BodyClass" "stack-3")}}
     {{if eq (printf "%s" .St.Mode) "advanced"}}
       <div class="stack-2 flags-grid">
         <label class="cb"><input type="checkbox" name="tx_enable" value="1" {{if .St.TXEnable}}checked{{end}}> Master TX enable<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Let aprgo transmit over RF. Off = receive-only regardless of other flags.</span></span></label>
@@ -94,7 +94,7 @@
     {{end}}
     {{template "settingsSectionClose" .}}
 
-    {{template "settingsSectionOpen" (dict "Num" "04" "Title" "TNC" "Sub" "The radio interface aprgo will talk to.")}}
+    {{template "settingsSectionOpen" (dict "Title" "TNC" "Sub" "The radio interface aprgo will talk to.")}}
       {{if eq (printf "%s" .St.Mode) "is"}}
       <div class="mode-managed-note">
         <div class="eyebrow">Not used in APRS-IS only mode</div>
@@ -132,7 +132,7 @@
       {{end}}
     {{template "settingsSectionClose" .}}
 
-    {{template "settingsSectionOpen" (dict "Num" "05" "Title" "APRS-IS" "Sub" "The internet leg. The filter scopes what you receive." "BodyClass" "grid-cols-fit-wide")}}
+    {{template "settingsSectionOpen" (dict "Title" "APRS-IS" "Sub" "The internet leg. The filter scopes what you receive." "BodyClass" "grid-cols-fit-wide")}}
     {{if .St.OfflineMode}}
       <div class="mode-managed-note">
         <div class="eyebrow">Disabled in Offline mode</div>
@@ -142,12 +142,12 @@
       <div class="inline-fields">
         <div class="dim mono-num">{{.St.ISServer}}</div>
         <span class="sep">·</span>
-        {{if not .ISConnected}}<span class="dim">○ disconnected</span>
+        {{if not .ISConnected}}{{if .ISLastError}}<span class="dim">○ disconnected</span>{{else}}<span class="status-warn">● connecting</span>{{end}}
         {{else if .ISUnverified}}<span class="status-warn">● unverified</span>
         {{else if .ISVerified}}<span class="status-ok">● verified</span>
-        {{else}}<span class="status-ok">● connecting</span>{{end}}
+        {{else}}<span class="status-warn">● connecting</span>{{end}}
       </div>
-      <label>Server
+      <label><span class="label-head">Server<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">APRS-IS Tier-2 server to connect to. <code>rotate.aprs2.net</code> auto-picks a healthy node anywhere globally; regional entries are faster and reduce cross-ocean traffic. Port <code>14580</code> supports server-side filters. Pick "Custom…" only if a specific server is required (e.g. a private network).</span></span></span>
         <select id="is-server-region" class="is-server-region">
           <option value="rotate.aprs2.net:14580">Global rotation — rotate.aprs2.net</option>
           <option value="noam.aprs2.net:14580">North America — noam.aprs2.net</option>
@@ -165,52 +165,81 @@
     {{end}}
     {{template "settingsSectionClose" .}}
 
-    {{template "settingsSectionOpen" (dict "Num" "06" "Title" "Beacons" "Sub" "Periodic transmissions announcing your station." "BodyClass" "beacons-body")}}
+    {{template "settingsSectionOpen" (dict "Title" "Beacons" "Sub" "Periodic transmissions announcing your station." "BodyClass" "beacons-body")}}
       <div id="beacon-list" class="beacon-list">
       {{range .BeaconViews}}
       <fieldset class="beacon-row">
-        <legend>Beacon: {{.B.Name}}</legend>
-        {{$lf := index $.BeaconLastFired .B.Name}}{{if and $lf (not $lf.IsZero)}}<div class="beacon-last-fired">Last fired: {{ago $lf}} ago</div>{{end}}
-        <input type="hidden" name="beacon_{{.Idx}}_name" value="{{.B.Name}}">
-        <div class="beacon-row-grid">
-          <label><span class="label-head">Symbol<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Icon shown on aprs.fi and radios. First char = symbol table or overlay; second char = symbol code. <a href="http://www.aprs.org/symbols.html" target="_blank" rel="noopener">Full reference</a>.</span></span></span>
+        <legend class="beacon-legend">
+          <span class="beacon-legend-meta">
+            <span>Every {{div .B.EveryS 60}} min</span>
+            <span class="sep">·</span>
+            <span>{{if .PathStr}}{{.PathStr}}{{else}}direct{{end}}</span>
+            {{$lf := index $.BeaconLastFired .B.Name}}{{if and $lf (not $lf.IsZero)}}<span class="sep">·</span><span>Last fired {{ago $lf}} ago</span>{{end}}
+          </span>
+        </legend>
+        <input type="hidden" name="beacon_{{.Idx}}_remove" value="0" class="beacon-remove-flag">
+
+        <div class="beacon-head">
+          <label class="beacon-head-name-label">Name<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Local identifier only — not transmitted on air. The over-the-air packet identifies your station by Callsign-SSID, Symbol, and Comment. The name is used internally to track scheduling (last-fired time), as the key for "Fire now" actions, and in logs. Renaming a beacon orphans its prior last-fired timestamp.</span></span>
+            <input type="text" class="beacon-head-name" name="beacon_{{.Idx}}_name" value="{{.B.Name}}" size="16" maxlength="32" pattern="[A-Za-z0-9_-]+" required title="Letters, digits, dash, underscore; must be unique">
+          </label>
+          <div class="beacon-head-actions">
+            <label class="cb"><input type="checkbox" name="beacon_{{.Idx}}_enabled" value="1" {{if .B.Enabled}}checked{{end}}> Enabled</label>
+            <label class="cb"><input type="checkbox" name="beacon_{{.Idx}}_messages" value="1" {{if .B.Messages}}checked{{end}}> Messaging-capable<span class="info-tip tip-right" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Uses <code>=</code> instead of <code>!</code> so other stations know they can message this beacon.</span></span></label>
+            <button type="button" class="btn ghost beacon-remove">Remove</button>
+          </div>
+        </div>
+
+        <div class="beacon-body">
+          <label class="beacon-symbol-row"><span class="label-head">Symbol<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Icon shown on aprs.fi and radios. First char = symbol table or overlay; second char = symbol code. <a href="http://www.aprs.org/symbols.html" target="_blank" rel="noopener">Full reference</a>.</span></span></span>
             <div class="beacon-symbol-picker" data-idx="{{.Idx}}">
               <input type="hidden" name="beacon_{{.Idx}}_symbol" class="beacon-symbol-value" value="{{if oneOf .B.Symbol "I&" "R&" "/&" "\\&" "S#" "/#" "\\#" "/-" "/r"}}{{.B.Symbol}}{{else}}custom{{end}}">
-              <div class="beacon-symbol-swatches"></div>
-              <div class="beacon-symbol-label"></div>
-              <input type="text" class="beacon-symbol-custom" name="beacon_{{.Idx}}_symbol_custom"
-                     value="{{if not (oneOf .B.Symbol "I&" "R&" "/&" "\\&" "S#" "/#" "\\#" "/-" "/r")}}{{.B.Symbol}}{{end}}"
-                     placeholder="2 chars (e.g. /j)" maxlength="2" minlength="2" pattern="..">
+              <div class="beacon-symbol-trigger-row">
+                <button type="button" class="beacon-symbol-trigger" aria-haspopup="true" aria-expanded="false">
+                  <span class="beacon-symbol-trigger-icon"></span>
+                  <span class="beacon-symbol-label"></span>
+                  <span class="beacon-symbol-caret" aria-hidden="true">▾</span>
+                </button>
+                <input type="text" class="beacon-symbol-custom" name="beacon_{{.Idx}}_symbol_custom"
+                       value="{{if not (oneOf .B.Symbol "I&" "R&" "/&" "\\&" "S#" "/#" "\\#" "/-" "/r")}}{{.B.Symbol}}{{end}}"
+                       placeholder="2 chars (e.g. /j)" maxlength="2" minlength="2" pattern="..">
+              </div>
+              <div class="beacon-symbol-popover" hidden>
+                <div class="beacon-symbol-swatches"></div>
+              </div>
             </div>
           </label>
-          <label><span class="label-head">Comment<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Free text shown next to your station on receivers. Max 43 chars per APRS spec.</span></span></span>
-            <input type="text" name="beacon_{{.Idx}}_comment" value="{{.B.Comment}}" placeholder="aprgo Fill-in iGate" maxlength="43">
-          </label>
-          <label>Path
-            <input type="text" name="beacon_{{.Idx}}_path" value="{{.PathStr}}" placeholder="WIDE1-1">
-          </label>
-          <label><span class="label-head">Interval (min)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Minutes between beacons. Minimum 10 — be polite to the channel.</span></span></span>
-            <input type="number" name="beacon_{{.Idx}}_every_min" value="{{div .B.EveryS 60}}" min="10" max="1440">
-          </label>
-          <label><span class="label-head">Callsign override<span class="info-tip tip-right" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Empty = use station callsign. Set only to run a beacon under a different SSID — e.g. iGate <code>N0CALL-10</code> with weather beacon <code>N0CALL-1</code>. SSID 0–15.</span></span></span>
-            <input type="text" name="beacon_{{.Idx}}_callsign" value="{{.B.Callsign}}" placeholder="(uses station callsign)" pattern="[A-Za-z0-9-]*">
-          </label>
-          <label><span class="label-head">Position ambiguity<span class="info-tip tip-right" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Blanks trailing digits of the broadcast position for privacy. Receivers plot the midpoint of the resulting box. <code>0</code> = full precision; <code>4</code> = degree-level (~111 km).</span></span></span>
-            <select name="beacon_{{.Idx}}_ambiguity">
-              <option value="0" {{if eq .B.AmbiguityLevel 0}}selected{{end}}>0 — full precision (~18 m)</option>
-              <option value="1" {{if eq .B.AmbiguityLevel 1}}selected{{end}}>1 — ~185 m</option>
-              <option value="2" {{if eq .B.AmbiguityLevel 2}}selected{{end}}>2 — ~1.8 km</option>
-              <option value="3" {{if eq .B.AmbiguityLevel 3}}selected{{end}}>3 — ~18 km</option>
-              <option value="4" {{if eq .B.AmbiguityLevel 4}}selected{{end}}>4 — ~111 km (degree-only)</option>
-            </select>
+          <label class="beacon-comment"><span class="label-head">Comment<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Free text shown next to your station on receivers. Max 43 chars per APRS spec.</span></span></span>
+            <div class="comment-row">
+              <input type="text" id="beacon-comment-{{.Idx}}" name="beacon_{{.Idx}}_comment" value="{{.B.Comment}}" placeholder="aprgo Fill-in iGate" maxlength="43">
+              <button type="button" class="btn ghost comment-helpers-btn" data-target="beacon-comment-{{.Idx}}" title="Open structured-field composer">Helpers</button>
+            </div>
           </label>
         </div>
-        <div class="beacon-row-foot">
-          <label class="cb"><input type="checkbox" name="beacon_{{.Idx}}_enabled" value="1" {{if .B.Enabled}}checked{{end}}> Enabled</label>
-          <label class="cb"><input type="checkbox" name="beacon_{{.Idx}}_messages" value="1" {{if .B.Messages}}checked{{end}}> Messaging-capable<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Uses <code>=</code> instead of <code>!</code> so other stations know they can message this beacon.</span></span></label>
-          <button type="button" class="btn ghost beacon-remove">Remove beacon</button>
-          <input type="hidden" name="beacon_{{.Idx}}_remove" value="0" class="beacon-remove-flag">
-        </div>
+
+        <details class="beacon-advanced">
+          <summary>Advanced — path, interval, callsign override, ambiguity</summary>
+          <div class="beacon-advanced-body">
+            <label><span class="label-head">Path<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">AX.25 digipeater path attached to this beacon. <code>WIDE1-1</code> = one fill-in hop (typical home station). <code>WIDE2-1</code> = one wide-area hop. <code>WIDE1-1,WIDE2-1</code> = two hops (mobile). Empty = direct only — appropriate for hilltop sites. Don't exceed 2 hops; long paths waste channel capacity.</span></span></span>
+              <input type="text" name="beacon_{{.Idx}}_path" value="{{.PathStr}}" placeholder="WIDE1-1">
+            </label>
+            <label><span class="label-head">Interval (min)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Minutes between beacons. Minimum 10 — be polite to the channel.</span></span></span>
+              <input type="number" name="beacon_{{.Idx}}_every_min" value="{{div .B.EveryS 60}}" min="10" max="1440">
+            </label>
+            <label><span class="label-head">Callsign override<span class="info-tip tip-right" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Empty = use station callsign. Set only to run a beacon under a different SSID — e.g. iGate <code>N0CALL-10</code> with weather beacon <code>N0CALL-1</code>. SSID 0–15.</span></span></span>
+              <input type="text" name="beacon_{{.Idx}}_callsign" value="{{.B.Callsign}}" placeholder="(uses station callsign)" pattern="[A-Za-z0-9-]*">
+            </label>
+            <label><span class="label-head">Position ambiguity<span class="info-tip tip-right" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Blanks trailing digits of the broadcast position for privacy. Receivers plot the midpoint of the resulting box. <code>0</code> = full precision; <code>4</code> = degree-level (~111 km).</span></span></span>
+              <select name="beacon_{{.Idx}}_ambiguity">
+                <option value="0" {{if eq .B.AmbiguityLevel 0}}selected{{end}}>0 — full precision (~18 m)</option>
+                <option value="1" {{if eq .B.AmbiguityLevel 1}}selected{{end}}>1 — ~185 m</option>
+                <option value="2" {{if eq .B.AmbiguityLevel 2}}selected{{end}}>2 — ~1.8 km</option>
+                <option value="3" {{if eq .B.AmbiguityLevel 3}}selected{{end}}>3 — ~18 km</option>
+                <option value="4" {{if eq .B.AmbiguityLevel 4}}selected{{end}}>4 — ~111 km (degree-only)</option>
+              </select>
+            </label>
+          </div>
+        </details>
       </fieldset>
       {{end}}
       <input type="hidden" name="beacon_count" id="beacon-count" value="{{len .BeaconViews}}">
@@ -221,7 +250,7 @@
       </div>
     {{template "settingsSectionClose" .}}
 
-    {{template "settingsSectionOpen" (dict "Num" "07" "Title" "UI" "BodyClass" "grid-cols-fit")}}
+    {{template "settingsSectionOpen" (dict "Title" "UI" "BodyClass" "grid-cols-fit")}}
       <label>Theme
         <select name="theme">
           <option value="auto"  {{if eq .St.Theme "auto"}}selected{{end}}>Auto (follow system)</option>
@@ -229,7 +258,7 @@
           <option value="dark"  {{if eq .St.Theme "dark"}}selected{{end}}>Dark</option>
         </select>
       </label>
-      <label>Data retention (days, 0 = forever)
+      <label><span class="label-head">Data retention (days, 0 = forever)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">How long aprgo keeps received packets, station history, and gate-drop diagnostics in its local database before purging. Larger values grow the on-disk DB; smaller values keep the Stats and Stations pages snappy. <code>0</code> never purges — fine for low-traffic stations, may eat disk on busy iGates.</span></span></span>
         <input type="number" name="retention_days" value="{{.St.RetentionDays}}" min="0" max="3650">
       </label>
       <label>Time format
@@ -298,7 +327,7 @@
 
   <details class="settings-section settings-section--collapsible">
     <summary class="settings-section-head">
-      <span class="title"><span class="num">08</span>Account</span>
+      <span class="title">Account</span>
       <span class="sub">Change the password used to sign in to this UI.</span>
     </summary>
     <div class="settings-section-body">
@@ -313,4 +342,109 @@
   </details>
 </section>
 <script src="/static/js/settings.js" defer></script>
+
+{{/* ── Beacon comment composer modal ──────────────────────────────────
+     Shared single dialog per page; the comment-helpers-btn buttons set
+     data-target to the input id, JS reads existing encoded fields out
+     of that input, populates the form, and on submit re-encodes +
+     writes back. Native <dialog> for modal semantics. */}}
+<dialog id="comment-composer" class="comment-composer">
+  <form method="dialog" class="comment-composer-form">
+    <h2>Comment helpers</h2>
+    <p class="cc-intro">
+      Tick the fields you want included, fill in their values, then
+      <strong>Apply to comment</strong>. aprgo encodes each into the
+      APRS-spec wire format and appends them to your beacon comment.
+      Existing encoded fragments are detected and replaced — round-trip
+      safe. Unchecking a field removes it on Apply.
+    </p>
+
+    <section class="cc-field">
+      <label class="cc-field-head"><input type="checkbox" id="cc-alt-on"><span class="cc-field-name">Altitude</span><code class="cc-field-fmt">/A=NNNNNN</code></label>
+      <div class="cc-field-body">
+        <div class="cc-field-inputs">
+          <label>Feet<input type="number" id="cc-alt-val" placeholder="1457" min="0" max="999999"></label>
+        </div>
+        <p class="cc-field-example">e.g. <code>1457</code> → <code>/A=001457</code> (zero-padded to 6 digits).</p>
+      </div>
+    </section>
+
+    <section class="cc-field">
+      <label class="cc-field-head"><input type="checkbox" id="cc-rng-on"><span class="cc-field-name">Range circle</span><code class="cc-field-fmt">RNGNNNN</code></label>
+      <div class="cc-field-body">
+        <div class="cc-field-inputs">
+          <label>Miles<input type="number" id="cc-rng-mi" placeholder="50" min="1" max="9999"></label>
+        </div>
+        <p class="cc-field-example">A simpler alternative to PHG: declare your coverage radius directly.</p>
+      </div>
+    </section>
+
+    <section class="cc-field cc-field--wide">
+      <label class="cc-field-head"><input type="checkbox" id="cc-freq-on"><span class="cc-field-name">Frequency</span><code class="cc-field-fmt">NNN.NNNMHz T123 +600</code></label>
+      <div class="cc-field-body">
+        <div class="cc-field-inputs">
+          <label>MHz<input type="text" id="cc-freq-mhz" placeholder="146.520" pattern="\d{2,3}\.\d{2,4}"></label>
+          <label>Tone <span class="dim normal">(optional)</span><input type="text" id="cc-freq-tone" placeholder="T100 or D023"></label>
+          <label>Offset kHz <span class="dim normal">(optional)</span><input type="text" id="cc-freq-offset" placeholder="+600 or -600"></label>
+        </div>
+        <p class="cc-field-example">Tone is CTCSS (<code>T100</code>) or DCS (<code>D023</code>). Offset is signed kHz for repeater splits.</p>
+      </div>
+    </section>
+
+    <section class="cc-field cc-field--wide">
+      <label class="cc-field-head"><input type="checkbox" id="cc-phg-on"><span class="cc-field-name">Coverage (PHG)</span><code class="cc-field-fmt">PHGxxxx</code></label>
+      <div class="cc-field-body">
+        <div class="cc-field-inputs">
+          <label>Power
+            <select id="cc-phg-power">
+              <option value="0">1 W</option><option value="1">4 W</option><option value="2">9 W</option><option value="3">16 W</option>
+              <option value="4" selected>25 W</option><option value="5">36 W</option><option value="6">49 W</option>
+              <option value="7">64 W</option><option value="8">81 W</option><option value="9">100 W</option>
+            </select>
+          </label>
+          <label>Antenna height
+            <select id="cc-phg-height">
+              <option value="0">10 ft</option><option value="1">20 ft</option><option value="2">40 ft</option>
+              <option value="3" selected>80 ft</option><option value="4">160 ft</option><option value="5">320 ft</option>
+              <option value="6">640 ft</option><option value="7">1280 ft</option><option value="8">2560 ft</option><option value="9">5120 ft</option>
+            </select>
+          </label>
+          <label>Gain (dB)<input type="number" id="cc-phg-gain" value="3" min="0" max="9"></label>
+          <label>Direction
+            <select id="cc-phg-dir">
+              <option value="0" selected>Omni</option>
+              <option value="1">NE (45°)</option>
+              <option value="2">E (90°)</option>
+              <option value="3">SE (135°)</option>
+              <option value="4">S (180°)</option>
+              <option value="5">SW (225°)</option>
+              <option value="6">W (270°)</option>
+              <option value="7">NW (315°)</option>
+              <option value="8">N (360°)</option>
+            </select>
+          </label>
+        </div>
+        <p class="cc-field-example">Receivers derive an estimated coverage radius from these four digits. APRS101 §17.</p>
+      </div>
+    </section>
+
+    <div class="cc-preview">
+      <div class="cc-preview-head">
+        <span class="cc-preview-label">Preview</span>
+        <span class="cc-preview-count" id="cc-count">0 / 43</span>
+      </div>
+      <div class="cc-preview-text" id="cc-preview-text"></div>
+      <p class="cc-preview-warn" id="cc-preview-warn" hidden>
+        Over 43 characters — APRS will silently truncate the end on save. Trim the original comment or uncheck a field.
+      </p>
+    </div>
+
+    <div class="comment-composer-actions">
+      <button type="button" id="cc-cancel" class="btn ghost">Cancel</button>
+      <button type="button" id="cc-apply" class="primary">Apply to comment</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/static/js/comment-composer.js" defer></script>
 {{template "footer" .}}{{end}}

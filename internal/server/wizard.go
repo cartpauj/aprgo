@@ -597,8 +597,14 @@ func applyModeDefaults(st *state.State, m state.Mode) {
 	var path []string
 	// Every preset clears PreemptiveDigipeat — it's an Advanced-only opt-in.
 	// ModeAdvanced (handled below) leaves the operator's setting alone.
+	// Same treatment for AllowSendBulletins: bulletin sending is gated to
+	// Advanced mode + explicit consent, so switching away to any other
+	// mode revokes the permission. The operator has to re-tick the box
+	// (and re-confirm the agreement prompt) if they switch back to
+	// Advanced.
 	if m != state.ModeAdvanced {
 		st.PreemptiveDigipeat = false
+		st.AllowSendBulletins = false
 	}
 	// Reset the IS filter to mode default (operator's radius preserved).
 	// iGate roles use `-t/pwntso` to drop the position/weather/telemetry
