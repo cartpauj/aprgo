@@ -277,7 +277,7 @@ h3 { font-weight: 500; font-size: 0.95rem; margin: var(--gap-4) 0 var(--gap-2); 
 /* Hamburger button — hidden on desktop; revealed at ≤640px via the
    mobile media block below. */
 .nav-toggle { display: none; }
-.nav-logout { display: none; }
+.nav-logout, .nav-signin { display: none; }
 .topbar-inner {
   max-width: 1320px;
   margin: 0 auto;
@@ -2044,7 +2044,8 @@ body.view-raw .pkt .raw-line    { display: inline; }
     color: var(--accent);
     box-shadow: inset 3px 0 0 var(--accent);
   }
-  .topbar nav a.nav-logout {
+  .topbar nav a.nav-logout,
+  .topbar nav a.nav-signin {
     display: block;
     margin-top: 8px;
     padding-top: 14px;
