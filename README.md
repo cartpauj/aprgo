@@ -34,6 +34,17 @@ Both ARMv7 and ARMv6 .debs carry `Architecture: armhf` in their metadata, since 
 
 aprgo targets Linux with systemd. macOS, Windows, and the BSDs aren't supported: Bluetooth pairing uses BlueZ, and the installer wires up a systemd unit. For anything not in the table above, [build from source](#building-from-source).
 
+#### Verified configurations
+
+End-to-end tested (pair, gate, beacon, console) on:
+
+| Hardware | OS | TNC |
+|---|---|---|
+| Raspberry Pi Zero W (ARMv6) | Raspberry Pi OS 32-bit (no desktop) | Mobilinkd TNC3 over Bluetooth |
+| x86_64 with Bluetooth | Debian 13 Trixie (no desktop) | Mobilinkd TNC3 over Bluetooth |
+
+If you bring up aprgo on hardware/OS not listed and it works (or doesn't), please open an issue — happy to expand this list.
+
 ### Reaching the console
 
 aprgo auto-starts on install. The web console is **HTTPS by default** — start at `https://<host>:14439/` and click through the self-signed cert warning once. Plain HTTP on 14473 is a restricted fallback for hosts where TLS isn't usable (e.g. a browser that refuses self-signed certs, or a captive network that strips TLS).

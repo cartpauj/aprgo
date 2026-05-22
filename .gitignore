@@ -29,3 +29,6 @@ state.json
 
 # Logs
 *.log
+
+# Local-only working docs (TODO lists, audit notes, design scratch)
+.docs/

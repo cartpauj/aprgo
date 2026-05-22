@@ -189,6 +189,66 @@ func parseBeaconsForm(r interface {
 	return out, errs
 }
 
+// isFilterTermRE matches one APRS-IS server-filter term. The grammar is
+// permissive on purpose: aprs-is.net/javaprsfilter.aspx lists ~15 letter
+// codes (r, m, p, b, o, t, s, d, e, f, a, q, u, g) plus an optional `-`
+// exclusion prefix. Rather than embedding the full catalog we accept any
+// single letter followed by `/` then one-or-more args separated by `/`,
+// each arg containing the usual safe character set (no spaces, no
+// control bytes, no `|`/`~` which APRS reserves).
+//
+// Examples accepted:
+//
+//	r/30.27/-97.74/100
+//	-t/pwntso
+//	b/N0CALL*/W1AW
+//	a/45.0/-93.0/40.0/-90.0
+//	q/CR
+//
+// Rejected: empty terms, terms missing the letter or the slash, args
+// containing spaces / control chars / reserved bytes.
+var isFilterTermRE = regexp.MustCompile(`^-?[a-zA-Z]/[^|~\s/\x00-\x1F\x7F]+(?:/[^|~\s/\x00-\x1F\x7F]+)*$`)
+
+// ValidateISFilter parses the operator-supplied APRS-IS server-side filter
+// per aprs-is.net/javaprsfilter.aspx. Empty is allowed (means "no filter",
+// which the IS server interprets as the bare unfiltered firehose — fine
+// for a small minority of operators). Non-empty must split on whitespace
+// into one or more terms, each matching isFilterTermRE.
+//
+// Caller responsibility on error: fall back to a known-good default like
+// `r/<lat>/<lon>/<radius> -t/pwntso`, not silently accept garbage —
+// APRS-IS will return the empty firehose for a malformed filter and the
+// operator will think "filter does nothing."
+func ValidateISFilter(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	for _, term := range strings.Fields(s) {
+		if !isFilterTermRE.MatchString(term) {
+			return fmt.Errorf("invalid APRS-IS filter term %q (see aprs-is.net/javaprsfilter.aspx)", term)
+		}
+	}
+	return nil
+}
+
+// defaultISFilter builds the known-good fallback filter used when the
+// operator's typed filter fails ValidateISFilter. Mirrors the form the
+// wizard constructs after the location step (`r/<lat>/<lon>/<km>` plus
+// the iGate `-t/pwntso` exclusion to drop the position/weather/telemetry
+// firehose). Caller passes mode-appropriate values; for ModeIS pass an
+// empty excludeTypes to keep positions+weather visible on the map.
+func defaultISFilter(lat, lon float64, km int, excludeTypes string) string {
+	if km <= 0 {
+		km = 150
+	}
+	base := fmt.Sprintf("r/%.2f/%.2f/%d", lat, lon, km)
+	if excludeTypes == "" {
+		return base
+	}
+	return base + " -t/" + excludeTypes
+}
+
 // validatePasscode accepts -1 (RX-only) or a decimal numeric passcode.
 func validatePasscode(s string) error {
 	s = strings.TrimSpace(s)

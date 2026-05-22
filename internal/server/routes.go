@@ -1666,12 +1666,29 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		flash(w, false, strings.Join(verrs, "; "))
 		return
 	}
+	// APRS-IS filter: validate before save. On parse failure, fall back to
+	// the known-good default for the operator's position + mode rather than
+	// silently passing garbage to the IS server (which responds by sending
+	// the empty firehose, leaving the operator wondering why nothing shows
+	// up). We surface the fallback in the success flash so they know to fix
+	// it.
+	rawFilter := sanitizeAPRSField(r.FormValue("is_filter"))
+	filterErr := ValidateISFilter(rawFilter)
 	err := s.state.Update(func(st *state.State) error {
 		cs, _ := validateCallsign(combinedCS)
 		st.Callsign = cs
 		st.Passcode = sanitizeAPRSField(passcodeIn)
 		st.ISServer = sanitizeAPRSField(r.FormValue("is_server"))
-		st.ISFilter = sanitizeAPRSField(r.FormValue("is_filter"))
+		if filterErr != nil {
+			km := filterRadiusFromIS(st.ISFilter)
+			excludes := "pwntso"
+			if st.Mode == state.ModeIS {
+				excludes = ""
+			}
+			st.ISFilter = defaultISFilter(st.Lat, st.Lon, km, excludes)
+		} else {
+			st.ISFilter = rawFilter
+		}
 		st.Beacons = beacons
 		// Gating + digipeating flags are only writable in Advanced mode.
 		// Other modes manage them via applyModeDefaults; ignoring the
@@ -1771,7 +1788,11 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		delete(s.wdrafts, k)
 	}
 	s.wmu.Unlock()
-	flash(w, true, "Saved.")
+	if filterErr != nil {
+		flash(w, true, "Saved. (APRS-IS filter was invalid — replaced with a safe default: "+filterErr.Error()+")")
+	} else {
+		flash(w, true, "Saved.")
+	}
 }
 
 func splitCSV(s string) []string {
