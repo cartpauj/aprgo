@@ -22,6 +22,12 @@ set -eu
 
 GH_REPO="cartpauj/aprgo"
 TMPDIR="$(mktemp -d)"
+# apt forks an unprivileged `_apt` user to fetch packages and will print a
+# "Permission denied" notice if it can't traverse the .deb's directory —
+# even when the file is local and no fetch is needed. mktemp -d defaults
+# to 0700; widening to 0755 silences the cosmetic warning without exposing
+# anything sensitive (the .deb is signed and downloaded from a public URL).
+chmod 0755 "$TMPDIR"
 trap 'rm -rf "$TMPDIR"' EXIT
 
 # ─── pretty output helpers ────────────────────────────────────────────
