@@ -138,10 +138,34 @@ func (a *Authenticator) Validate(r *http.Request) string {
 }
 
 // RequireLogin is HTTP middleware: redirects to /login if not authed.
+//
+// Two redirect strategies, picked by request type:
+//
+//   - HTMX request (has HX-Request header): respond 200 with HX-Redirect:
+//     /login so the browser does a full-page navigation. A bare 302 here
+//     would be silently followed by HTMX's XHR and the login page's HTML
+//     would land in whatever target the original swap pointed at —
+//     producing the "login card overlapping the Save button" mangling
+//     reported in the wild.
+//
+//   - Normal browser navigation: 302 to /login?next=<path>. We only embed
+//     next= when the original method is GET — POST URLs (handleAccount,
+//     handleSettingsSave, etc.) aren't safely reachable via a post-login
+//     redirect (the body is gone), so we'd just land on a "POST required"
+//     stub. For non-GET, drop next= and let the user land at /.
 func (a *Authenticator) RequireLogin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if a.Validate(r) == "" {
-			http.Redirect(w, r, "/login?next="+r.URL.Path, http.StatusFound)
+			target := "/login"
+			if r.Method == http.MethodGet {
+				target = "/login?next=" + r.URL.Path
+			}
+			if r.Header.Get("HX-Request") != "" {
+				w.Header().Set("HX-Redirect", target)
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			http.Redirect(w, r, target, http.StatusFound)
 			return
 		}
 		next.ServeHTTP(w, r)

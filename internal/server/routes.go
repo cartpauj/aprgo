@@ -1812,7 +1812,11 @@ func flash(w http.ResponseWriter, ok bool, msg string) {
 // and restarts.
 func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		flash(w, false, "POST required")
+		// Operator may have landed here after a login bounce (the post-
+		// login redirect honored next=/settings/account from an HTMX call
+		// that didn't survive the round trip). Send them back to the
+		// settings page rather than rendering a bare "POST required" stub.
+		http.Redirect(w, r, "/settings#account", http.StatusSeeOther)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -1853,6 +1857,11 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 			flash(w, false, err.Error())
 			return
 		}
+		// Deliberately NOT re-issuing the cookie — the form's hint says
+		// "You'll stay signed in unless you renamed the user." Rename =
+		// fresh login (the operator just claimed a new identity; making
+		// them re-auth under it is a sane gesture). The HX-Redirect path
+		// in RequireLogin handles the resulting redirect cleanly.
 	}
 
 	if passwordChanging {
@@ -1864,6 +1873,14 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 			flash(w, false, err.Error())
 			return
 		}
+		// SetPassword bumps PasswordGeneration, which invalidates every
+		// outstanding cookie that embedded the old gen — including the
+		// one this very request rode in on. Without re-issuing here, the
+		// next click (e.g. the operator double-clicks Save, or just loads
+		// another page) bounces to /login and HTMX swaps the redirect's
+		// HTML into a flash slot, mangling the page. Re-issue immediately
+		// so the active operator stays signed in.
+		s.auth.IssueCookie(w, r, s.config.Username())
 	}
 
 	// Lockdown flags. Each checkbox posts "1" when ticked, absent

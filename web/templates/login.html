@@ -13,7 +13,7 @@
         <span>1200 baud AX.25</span>
       </div>
     </div>
-    <form method="POST" action="/login">
+    <form method="POST" action="/login" onsubmit="this.querySelector('button[type=submit]').classList.add('htmx-request'); this.querySelector('button[type=submit]').disabled = true;">
       <input type="hidden" name="next" value="{{.Next}}">
       <label>Operator
         <input name="user" autocomplete="username" autofocus required>
@@ -22,7 +22,10 @@
         <input name="pass" type="password" autocomplete="current-password" required>
       </label>
       {{if .Error}}<div class="flash err">{{.Error}}</div>{{end}}
-      <button type="submit" class="primary">Authenticate</button>
+      <button type="submit" class="primary busy-btn">
+        <span class="busy-label-idle">Authenticate</span>
+        <span class="busy-label-active">Signing in…</span>
+      </button>
     </form>
     <div class="login-foot mono">
       <span class="login-foot-led"></span>

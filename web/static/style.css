@@ -2991,6 +2991,34 @@ html, body { overflow-x: hidden; }
 .htmx-request .htmx-indicator,
 .htmx-request.htmx-indicator { opacity: 1; }
 
+/* Submit-button busy state — swaps label and dims/spins while the
+   originating HTMX request is in flight. Used by the saveBar partial
+   and the login form. */
+.busy-btn { position: relative; }
+.busy-btn .busy-label-active { display: none; }
+.busy-btn[disabled],
+.busy-btn.htmx-request,
+.htmx-request .busy-btn { cursor: progress; opacity: 0.85; }
+.busy-btn[disabled] .busy-label-idle,
+.busy-btn.htmx-request .busy-label-idle,
+.htmx-request .busy-btn .busy-label-idle { display: none; }
+.busy-btn[disabled] .busy-label-active,
+.busy-btn.htmx-request .busy-label-active,
+.htmx-request .busy-btn .busy-label-active { display: inline; }
+/* Tiny spinning dot inside the "Saving…" label */
+.busy-btn .busy-label-active::before {
+  content: "";
+  display: inline-block;
+  width: 0.6em; height: 0.6em;
+  margin-right: 0.45em;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  vertical-align: -0.05em;
+  animation: busy-spin 0.7s linear infinite;
+}
+@keyframes busy-spin { to { transform: rotate(360deg); } }
+
 /* =========================================================================
    Chat-style messages page — two-pane operator IM
    ========================================================================= */

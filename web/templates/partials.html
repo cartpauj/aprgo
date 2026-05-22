@@ -57,13 +57,21 @@
 </article>
 {{end}}
 
-{{/* Sticky save bar with hint + actions. Caller embeds the submit button. */}}
+{{/* Sticky save bar with hint + actions. Caller embeds the submit button.
+   hx-disabled-elt + the saving-label make the button visibly busy while
+   HTMX is in flight (htmx-request class is auto-applied to the issuing
+   element for the duration of the request). On a slow Pi 0W a settings
+   save can take a few seconds and operators were left wondering if the
+   click registered. */}}
 {{define "saveBar"}}
 <div class="save-bar">
   <span class="save-hint">{{.Hint}}</span>
   <div class="save-actions">
     <div id="{{.FlashID}}"></div>
-    <button type="submit" class="primary">{{.Label}}</button>
+    <button type="submit" class="primary busy-btn" hx-disabled-elt="this">
+      <span class="busy-label-idle">{{.Label}}</span>
+      <span class="busy-label-active">Saving…</span>
+    </button>
   </div>
 </div>
 {{end}}
