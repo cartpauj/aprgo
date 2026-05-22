@@ -5,6 +5,7 @@
     "Title"   "Settings"
     "Lede"    "All of aprgo's configuration in one place.")}}
 
+  {{if .FlashErr}}<div class="flash err">{{.FlashErr}}</div>{{end}}
   {{if and .ISUnverified (not .St.OfflineMode)}}<div class="flash err">
     ⚠ APRS-IS rejected your passcode for callsign <code>{{.St.Callsign}}</code>. You're connected but every packet we send is being silently dropped (qAX'd) by the server. Generate the correct passcode for your callsign at <a href="https://apps.magicbug.co.uk/passcode/" target="_blank" rel="noopener">apps.magicbug.co.uk/passcode</a>, then update the <a href="#passcode-field">passcode field</a> below and save.
   </div>{{end}}

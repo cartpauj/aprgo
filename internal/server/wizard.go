@@ -199,7 +199,32 @@ func (s *Server) wizardRouter(w http.ResponseWriter, r *http.Request) {
 		d.Draft = s.state.Snapshot()
 		d.Modified = time.Now()
 	}
+	// Guard: a "Change X" wizard whose only real step is skip-eligible
+	// for the current mode would collapse to just the Done page, which is
+	// confusing. Most likely culprit: /setup/tnc reached while Mode=IS
+	// (the IS-only role has no TNC). Redirect to settings with a short
+	// note instead of silently rendering Done.
+	if !flavorHasVisibleWork(d.Flavor, d.Draft.Mode) {
+		http.Redirect(w, r, "/settings?wizard=na", http.StatusSeeOther)
+		return
+	}
 	s.renderStep(w, r, d)
+}
+
+// flavorHasVisibleWork reports whether at least one non-"done" step in
+// this flavor is visible given the current mode. False means every
+// substantive step would be skipped, leaving an operator nothing to do.
+// The first-run flavor always has visible work (identity is unconditional).
+func flavorHasVisibleWork(f wizardFlavor, m state.Mode) bool {
+	for _, k := range wizardSteps[f] {
+		if k == "done" {
+			continue
+		}
+		if !shouldSkipStep(k, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // wizardSave is POSTed by each step's form. Path: /setup/save/<step>.
@@ -485,6 +510,23 @@ func (s *Server) renderStep(w http.ResponseWriter, r *http.Request, d *wizardDra
 	}
 	if d.StepIdx >= len(steps) {
 		d.StepIdx = len(steps) - 1
+	}
+	// If the current step is now skip-eligible — because the operator
+	// changed mode after originally landing on it (e.g. picked Advanced,
+	// reached `advanced-flags`, went back, switched to RX-only) — walk
+	// forward to the next still-visible step. Without this the progress
+	// nav (which filters by visibility) and the rendered template (which
+	// blindly used steps[StepIdx]) disagree, and the operator sees a
+	// "Flags" page under a "Done"-position highlight.
+	for d.StepIdx < len(steps)-1 && shouldSkipStep(steps[d.StepIdx], d.Draft.Mode) {
+		d.StepIdx++
+	}
+	// Edge case: every step from here to the end is skip-eligible. Walk
+	// backwards to the nearest visible step rather than rendering a
+	// skipped one. The earliest step (identity) is never skip-eligible,
+	// so this loop terminates.
+	for d.StepIdx > 0 && shouldSkipStep(steps[d.StepIdx], d.Draft.Mode) {
+		d.StepIdx--
 	}
 	stepKey := steps[d.StepIdx]
 	// For the progress bar, hide steps that won't be reached given the
@@ -780,7 +822,7 @@ func wizardStepTitle(key string) string {
 	case "mode":
 		return "Mode"
 	case "advanced-flags":
-		return "Flags"
+		return "Customize"
 	case "beacon":
 		return "Beacon"
 	case "done":

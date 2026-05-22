@@ -1601,6 +1601,13 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	data["BeaconViews"] = views
 	data["BeaconLastFired"] = s.beacon.LastFired()
+	// Flash for the wizard-not-applicable redirect (e.g. /setup/tnc opened
+	// while Mode=IS has no TNC to change). The wizardRouter sends operators
+	// here with ?wizard=na rather than rendering an empty Done page.
+	switch r.URL.Query().Get("wizard") {
+	case "na":
+		data["FlashErr"] = "That wizard doesn't apply to your current operating mode — switch modes first if you need to configure that section."
+	}
 	s.render(w, "settings.html", data)
 }
 

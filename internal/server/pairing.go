@@ -219,6 +219,14 @@ func (s *Server) handleTNCConfirm(w http.ResponseWriter, r *http.Request) {
 	d.mu.Lock()
 	steps := wizardSteps[d.Flavor]
 	d.StepIdx++
+	// Same skip-loop as wizardSave: skip forward past any step that's
+	// invisible for the current mode (e.g. advanced-flags + beacon when
+	// mode is RX-only). Without this the post-BT-pair Continue button
+	// drops the operator on whatever step happens to be next in the
+	// static list — including ones we'd otherwise hide.
+	for d.StepIdx < len(steps) && shouldSkipStep(steps[d.StepIdx], d.Draft.Mode) {
+		d.StepIdx++
+	}
 	if d.StepIdx >= len(steps) {
 		d.StepIdx = len(steps) - 1
 	}
