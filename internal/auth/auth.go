@@ -59,12 +59,19 @@ func (a *Authenticator) IssueCookie(w http.ResponseWriter, r *http.Request, user
 		Value:    val,
 		Path:     "/",
 		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
+		// Lax (not Strict): Strict blocks the cookie on the redirected GET
+		// after the login POST, leaving the user stuck on a redirect loop
+		// back to /login. Lax allows top-level GET navigations to carry
+		// the cookie while still blocking cross-site POSTs — which is the
+		// CSRF surface we actually care about; requireCSRF enforces a
+		// synchronizer token on top of that for mutating routes.
+		SameSite: http.SameSiteLaxMode,
 		// Secure is auto-enabled when the request reached us over TLS
 		// (direct HTTPS or behind a trusted reverse proxy passing
 		// X-Forwarded-Proto=https). The transport gate already redirects
-		// non-loopback HTTP to HTTPS, so under normal operation login
-		// happens over TLS and the cookie picks up Secure here.
+		// non-loopback HTTP to HTTPS for critical paths, so under normal
+		// operation logins on those paths happen over TLS and the cookie
+		// picks up Secure here.
 		Secure:  isTLSRequest(r),
 		Expires: time.Now().Add(cookieMaxAge),
 	})

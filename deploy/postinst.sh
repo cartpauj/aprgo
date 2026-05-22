@@ -38,12 +38,21 @@ if command -v systemctl >/dev/null 2>&1; then
     fi
 
     # Skip start/restart in chroots / container builds where PID 1 isn't
-    # systemd — `systemctl is-system-running` returns "offline" there.
+    # systemd — /run/systemd/system only exists under a real systemd PID 1.
     if [ -d /run/systemd/system ]; then
         if [ "$is_install" = "1" ]; then
             systemctl start aprgo.service >/dev/null 2>&1 || true
         elif [ "$is_upgrade" = "1" ]; then
-            systemctl try-restart aprgo.service >/dev/null 2>&1 || true
+            # If the operator was running it, restart to pick up the new
+            # binary. If it's currently stopped (including the v0.0.6 case
+            # where the prior postinst forgot to start it), start it now —
+            # the unit is enabled, so the operator's clear intent is that
+            # it should be running.
+            if systemctl is-active --quiet aprgo.service; then
+                systemctl try-restart aprgo.service >/dev/null 2>&1 || true
+            else
+                systemctl start aprgo.service >/dev/null 2>&1 || true
+            fi
         fi
     fi
 else
@@ -51,23 +60,22 @@ else
     echo "       and the systemd unit, but you'll need to wire up startup yourself."
 fi
 
-# 3. Friendly first-run hint. Only on fresh install (not upgrades).
-if [ "$1" = "configure" ] && [ -z "${2:-}" ]; then
-    # First-time deb install (no previously-installed version arg).
-    show_hint=1
-elif [ "$1" = "1" ]; then
-    # First-time rpm install.
-    show_hint=1
+# 3. Friendly banner — printed on both install and upgrade so the operator
+#    always sees how to reach the console. Wording adapts to which case.
+if [ "$is_install" = "1" ]; then
+    banner_head="aprgo installed and started."
+elif [ "$is_upgrade" = "1" ]; then
+    banner_head="aprgo upgraded and restarted."
 else
-    show_hint=0
+    banner_head=""
 fi
 
-if [ "$show_hint" = "1" ]; then
+if [ -n "$banner_head" ]; then
     IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
     [ -z "$IP" ] && IP="$(hostname 2>/dev/null)"
     [ -z "$IP" ] && IP="localhost"
     echo
-    echo "  aprgo installed and started."
+    echo "  ${banner_head}"
     echo
     echo "  Web console — aprgo listens on two ports:"
     echo
@@ -78,7 +86,9 @@ if [ "$show_hint" = "1" ]; then
     echo "    HTTPS (https://${IP}:14439/) — full access. The cert is self-signed,"
     echo "          so your browser will warn once — click through to continue."
     echo
-    echo "  Default login:   admin / admin   (change on first sign-in)"
+    if [ "$is_install" = "1" ]; then
+        echo "  Default login:   admin / admin   (change on first sign-in)"
+    fi
     echo "  Logs:            journalctl -u aprgo -f"
     echo
 fi
