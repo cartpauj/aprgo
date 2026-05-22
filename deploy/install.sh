@@ -48,4 +48,3 @@ echo "  Restricted fallback if you can't reach HTTPS:"
 echo "    http://${IP}:14473/    (read-only — Settings/Messages/Bulletins redirect to HTTPS)"
 echo
 echo "  Default login:   admin / admin   (change immediately on first sign-in)"
-echo "  Logs:            journalctl -u aprgo -f"

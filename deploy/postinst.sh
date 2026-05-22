@@ -92,9 +92,8 @@ if [ -n "$banner_head" ]; then
     echo
     if [ "$is_install" = "1" ]; then
         echo "  Default login:   admin / admin   (change on first sign-in)"
+        echo
     fi
-    echo "  Logs:            journalctl -u aprgo -f"
-    echo
 fi
 
 exit 0
