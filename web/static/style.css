@@ -1569,13 +1569,9 @@ body.view-raw .pkt .raw-line    { display: inline; }
    bitmap is already 48px, this gives a 1:1 native render with no
    resampling. transform-origin avoids drift away from where it would
    sit at 24px. */
-.aprs-sym-wrap.large,
-.aprs-sym.large {
-  width: 48px; height: 48px;
-}
+.aprs-sym-wrap.large { width: 48px; height: 48px; }
 .aprs-sym-wrap.large .aprs-sym,
-.aprs-sym-wrap.large .aprs-sym-overlay,
-.aprs-sym.large {
+.aprs-sym-wrap.large .aprs-sym-overlay {
   transform: scale(2);
   transform-origin: top left;
 }

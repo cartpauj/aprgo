@@ -77,18 +77,31 @@
   var nav = document.getElementById('primary-nav');
   if (!btn || !nav) return;
   function setOpen(o){
-    btn.setAttribute('aria-expanded', String(o));
-    document.body.classList.toggle('nav-open', o);
+    btn.setAttribute('aria-expanded', o ? 'true' : 'false');
+    if (o) {
+      document.body.classList.add('nav-open');
+      // Attach the outside-tap-closes listener on the next tick. iOS
+      // Safari/Firefox can dispatch a synthetic click on a non-button
+      // target (the topbar-inner div, body, etc.) for the same gesture
+      // that fired the button click — stopPropagation can't stop it
+      // because it's a separate event. Deferring sidesteps that.
+      setTimeout(function(){ document.addEventListener('click', onDocClick); }, 0);
+    } else {
+      document.body.classList.remove('nav-open');
+      document.removeEventListener('click', onDocClick);
+    }
   }
-  btn.addEventListener('click', function(e){
-    e.stopPropagation();
-    setOpen(btn.getAttribute('aria-expanded') !== 'true');
-  });
+  function onDocClick(e){
+    if (!btn.contains(e.target) && !nav.contains(e.target)) setOpen(false);
+  }
+  function toggle(e){ e.preventDefault(); setOpen(btn.getAttribute('aria-expanded') !== 'true'); }
+  // Both events so iOS, which sometimes withholds the synthetic click on
+  // a button inside a sticky+backdrop-filtered header, still opens the
+  // menu. preventDefault on touchend suppresses the follow-up click.
+  btn.addEventListener('click', toggle);
+  btn.addEventListener('touchend', toggle);
   nav.addEventListener('click', function(e){
     if (e.target.tagName === 'A') setOpen(false);
-  });
-  document.addEventListener('click', function(e){
-    if (!btn.contains(e.target) && !nav.contains(e.target)) setOpen(false);
   });
   // Esc closes.
   document.addEventListener('keydown', function(e){

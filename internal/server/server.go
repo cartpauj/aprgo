@@ -1404,27 +1404,33 @@ func renderAPRSIcon(sym, size string) template.HTML {
 	idx := int(c) - 0x21
 	x := -((idx % 16) * 24)
 	y := -((idx / 16) * 24)
-	cls := "aprs-sym"
 	wrapCls := "aprs-sym-wrap"
 	if size == "large" {
-		cls += " large"
 		wrapCls += " large"
 	}
-	html := fmt.Sprintf(
-		`<span class="%s" title="%s" style="background-image:url(/static/aprs-symbols-48-%s.png);background-position:%dpx %dpx"></span>`,
-		cls, template.HTMLEscapeString(sym), sprite, x, y,
-	)
+	// Always emit the wrap form. The wrap reserves the on-page layout box
+	// (24px or 48px); the inner .aprs-sym is a fixed 24×24 sprite cell that
+	// the CSS scales up via transform for the .large case. Without the wrap
+	// the .large class would set width:48 *and* scale(2) on the same element,
+	// which leaves background-size at 384×144 inside a 48×48 box — showing a
+	// 2×2 patch of the sprite (the symptom looked like "multiple icons" on
+	// /-table symbols with no overlay).
+	overlay := ""
 	if t != '/' && t != '\\' {
 		oc := int(t) - 0x21
 		if oc >= 0 && oc < 16*6 {
 			ox := -((oc % 16) * 24)
 			oy := -((oc / 16) * 24)
-			html = fmt.Sprintf(
-				`<span class="%s" title="%s"><span class="aprs-sym" style="background-image:url(/static/aprs-symbols-48-%s.png);background-position:%dpx %dpx"></span><span class="aprs-sym-overlay" style="background-image:url(/static/aprs-symbols-48-2.png);background-position:%dpx %dpx"></span></span>`,
-				wrapCls, template.HTMLEscapeString(sym), sprite, x, y, ox, oy,
+			overlay = fmt.Sprintf(
+				`<span class="aprs-sym-overlay" style="background-image:url(/static/aprs-symbols-48-2.png);background-position:%dpx %dpx"></span>`,
+				ox, oy,
 			)
 		}
 	}
+	html := fmt.Sprintf(
+		`<span class="%s" title="%s"><span class="aprs-sym" style="background-image:url(/static/aprs-symbols-48-%s.png);background-position:%dpx %dpx"></span>%s</span>`,
+		wrapCls, template.HTMLEscapeString(sym), sprite, x, y, overlay,
+	)
 	return template.HTML(html)
 }
 
