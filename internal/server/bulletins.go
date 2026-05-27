@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -199,7 +200,7 @@ func (s *Server) handleBulletinSend(w http.ResponseWriter, r *http.Request) {
 	}
 	// Strip ":ADDR:" prefix to extract the body again for the store row.
 	bodyStored := strings.TrimPrefix(info, ":"+addr+":")
-	_, _ = s.store.LogMessage(store.Message{
+	if _, err := s.store.LogMessage(store.Message{
 		Time:      time.Now(),
 		Direction: "out",
 		Source:    snap.Callsign,
@@ -208,7 +209,9 @@ func (s *Server) handleBulletinSend(w http.ResponseWriter, r *http.Request) {
 		ViaRF:     via == "rf" || via == "both",
 		ViaIS:     via == "is" || via == "both",
 		Raw:       info,
-	})
+	}); err != nil {
+		log.Printf("store: LogMessage bulletin %s→%s: %v", snap.Callsign, addr, err)
+	}
 	http.Redirect(w, r, "/bulletins?sent=1", http.StatusSeeOther)
 }
 

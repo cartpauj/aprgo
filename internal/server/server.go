@@ -3,15 +3,19 @@
 package server
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -283,6 +287,19 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 		}()
 	}
+	// Hydrate persistent counters from SQLite BEFORE parseLoop spawns, so
+	// the atomic Stores in Hydrate don't race with concurrent Adds. After
+	// this, atomic counters carry lifetime values and sessionBase captures
+	// the start-of-process snapshot for session math.
+	if persisted, err := s.store.LoadCounters(); err != nil {
+		log.Printf("stats: load counters: %v (starting from zero)", err)
+		s.stats.Hydrate(nil)
+	} else {
+		s.stats.Hydrate(persisted)
+		log.Printf("stats: hydrated %d persisted counters", len(persisted))
+	}
+	spawn("counterFlush", s.runCounterFlush)
+
 	spawn("rf", s.rf.Run)
 	// Skip the APRS-IS client when the operator is in Offline mode (no
 	// internet). Without this we'd still dial the socket, log endless
@@ -341,6 +358,12 @@ func (s *Server) Run(ctx context.Context) error {
 			Certificates: []tls.Certificate{cert},
 			MinVersion:   tls.VersionTLS12,
 		},
+		// Self-signed cert means EVERY browser, PWA, monitoring tool, etc.
+		// emits handshake-rejection lines until the user clicks "trust",
+		// and a single page load can produce 6+ of them in a burst. The
+		// errors carry no operational signal — suppress at the log writer
+		// while letting other http server errors through.
+		ErrorLog: log.New(&tlsHandshakeFilterWriter{w: log.Writer()}, "", log.LstdFlags),
 	}
 
 	errc := make(chan error, 2)
@@ -353,10 +376,18 @@ func (s *Server) Run(ctx context.Context) error {
 	}()
 	go func() {
 		log.Printf("listening (https) on %s", s.opts.ListenHTTPS)
-		// Cert + key are already loaded into TLSConfig — empty paths are
-		// fine; ListenAndServeTLS only reads them if TLSConfig has no
-		// certs.
-		err := srvHTTPS.ListenAndServeTLS("", "")
+		rawLn, err := net.Listen("tcp", s.opts.ListenHTTPS)
+		if err != nil {
+			errc <- fmt.Errorf("https: %w", err)
+			return
+		}
+		// Sniff the first byte: TLS handshakes (0x16) pass through to the
+		// TLS server; anything else is treated as plain HTTP and answered
+		// with a 308 redirect to https:// on the same port. Without this,
+		// hitting http://host:14439/ produces a browser TLS error instead
+		// of the expected protocol upgrade.
+		tlsLn := tls.NewListener(&httpsOrRedirectListener{Listener: rawLn}, srvHTTPS.TLSConfig)
+		err = srvHTTPS.Serve(tlsLn)
 		if err != nil && err != http.ErrServerClosed {
 			errc <- fmt.Errorf("https: %w", err)
 		}
@@ -453,6 +484,13 @@ func (s *Server) parseLoop(ctx context.Context) {
 				s.stats.pktsIS.Add(1)
 			case ax25.SrcTX:
 				s.stats.pktsTX.Add(1)
+				// Beacon publishes are tagged IFace="beacon:<name>" by the
+				// beacon package; that's the only signal we have to count
+				// our beacon transmissions (the beacon pkg has no handle
+				// on stats, and we don't want to add one).
+				if strings.HasPrefix(pkt.Frame.IFace, "beacon:") {
+					s.stats.beacons.Add(1)
+				}
 			}
 
 			// Dupe check (RF only) — drop reflections of our own transmissions
@@ -472,9 +510,25 @@ func (s *Server) parseLoop(ctx context.Context) {
 				if s.viscous.cancelIfQueued(string(key)) {
 					suppressedByViscous.Add(1)
 					log.Printf("digi: viscous suppressed (heard %s>%s on RF first)", pkt.Frame.Src, pkt.Frame.Dest)
+					s.drops.add(dropEntry{
+						Time:   time.Now(),
+						Origin: originLabel(pkt.Frame.Origin),
+						Source: pkt.Frame.Src,
+						Dest:   pkt.Frame.Dest,
+						Info:   sanitizeInfo(pkt.Frame.Info),
+						Reason: "viscous cancelled (another digi handled it first)",
+					})
 				}
 				if s.dupe.CheckAndMark(key) {
 					s.stats.dupesDropped.Add(1)
+					s.drops.add(dropEntry{
+						Time:   time.Now(),
+						Origin: originLabel(pkt.Frame.Origin),
+						Source: pkt.Frame.Src,
+						Dest:   pkt.Frame.Dest,
+						Info:   sanitizeInfo(pkt.Frame.Info),
+						Reason: "duplicate (own echo or neighbor digi repeat)",
+					})
 					continue
 				}
 				// Sanity drop: positions impossibly far from our station are
@@ -486,8 +540,16 @@ func (s *Server) parseLoop(ctx context.Context) {
 				if (snap.Lat != 0 || snap.Lon != 0) &&
 					pkt.Decoded.Lat != nil && pkt.Decoded.Lon != nil &&
 					pkt.Decoded.MsgOrigSrc == "" {
-					if haversineKm(*pkt.Decoded.Lat, *pkt.Decoded.Lon, snap.Lat, snap.Lon) > maxIntakeDistKm {
+					if dist := haversineKm(*pkt.Decoded.Lat, *pkt.Decoded.Lon, snap.Lat, snap.Lon); dist > maxIntakeDistKm {
 						s.stats.distDropped.Add(1)
+						s.drops.add(dropEntry{
+							Time:   time.Now(),
+							Origin: originLabel(pkt.Frame.Origin),
+							Source: pkt.Frame.Src,
+							Dest:   pkt.Frame.Dest,
+							Info:   sanitizeInfo(pkt.Frame.Info),
+							Reason: fmt.Sprintf("position %.0f km from station (>%d km limit)", dist, int(maxIntakeDistKm)),
+						})
 						continue
 					}
 				}
@@ -495,21 +557,22 @@ func (s *Server) parseLoop(ctx context.Context) {
 				// upstream by the APRS-IS server). Runs before any storage
 				// or dashboard append so a broken transmitter doesn't
 				// pollute the heard list, packets table, or live feed.
-				// Emits a one-shot diagnostic entry on the packet that
-				// trips the threshold; subsequent dropped packets while
-				// blocked are silent.
 				if ok, justBlocked := s.srcLimiter.Allow(pkt.Frame.Src); !ok {
 					if justBlocked {
 						s.stats.rateLimited.Add(1)
-						s.drops.add(dropEntry{
-							Time:   time.Now(),
-							Origin: originLabel(pkt.Frame.Origin),
-							Source: pkt.Frame.Src,
-							Dest:   pkt.Frame.Dest,
-							Info:   sanitizeInfo(pkt.Frame.Info),
-							Reason: "rate-limited (>30/min, 15-min timeout)",
-						})
 					}
+					reason := "rate-limited (>30/min, 15-min timeout)"
+					if !justBlocked {
+						reason = "rate-limited (in 15-min timeout window)"
+					}
+					s.drops.add(dropEntry{
+						Time:   time.Now(),
+						Origin: originLabel(pkt.Frame.Origin),
+						Source: pkt.Frame.Src,
+						Dest:   pkt.Frame.Dest,
+						Info:   sanitizeInfo(pkt.Frame.Info),
+						Reason: reason,
+					})
 					continue
 				}
 			}
@@ -671,7 +734,7 @@ func (s *Server) parseLoop(ctx context.Context) {
 						alreadySeen := s.recentlyLogged(source, pkt.Decoded.MsgTo, pkt.Decoded.MsgBody, pkt.Decoded.MsgID) ||
 							s.recentlyLoggedBody(source, pkt.Decoded.MsgTo, pkt.Decoded.MsgBody)
 						if !alreadySeen {
-							_, _ = s.store.LogMessage(store.Message{
+							if _, err := s.store.LogMessage(store.Message{
 								Time:      pkt.Frame.RxAt,
 								Direction: "in",
 								Source:    source,
@@ -681,15 +744,19 @@ func (s *Server) parseLoop(ctx context.Context) {
 								ViaRF:     pkt.Frame.Origin == ax25.SrcRF,
 								ViaIS:     pkt.Frame.Origin == ax25.SrcIS,
 								Raw:       pkt.Frame.TNC2(),
-							})
+							}); err != nil {
+								log.Printf("store: LogMessage in %s→%s: %v", source, pkt.Decoded.MsgTo, err)
+							}
 						} else {
 							// Same logical message just arrived via the OTHER
 							// transport — IS-gated copy beat our RF decode (or
 							// vice versa). Merge the via flag onto the existing
 							// row so the messages page reflects "heard via both."
-							_ = s.store.MergeMessageVia(source, pkt.Decoded.MsgTo, pkt.Decoded.MsgBody,
+							if err := s.store.MergeMessageVia(source, pkt.Decoded.MsgTo, pkt.Decoded.MsgBody,
 								pkt.Frame.Origin == ax25.SrcRF,
-								pkt.Frame.Origin == ax25.SrcIS)
+								pkt.Frame.Origin == ax25.SrcIS); err != nil {
+								log.Printf("store: MergeMessageVia %s→%s: %v", source, pkt.Decoded.MsgTo, err)
+							}
 						}
 
 						// Auto-ACK: if the message has a msg-id AND was
@@ -783,6 +850,34 @@ func (s *Server) parseLoop(ctx context.Context) {
 					})
 				}
 			}
+		}
+	}
+}
+
+// counterFlushInterval is how often runCounterFlush snapshots the in-memory
+// atomic counters back to the SQLite counters table. A crash loses up to
+// this much counter activity. Surfaced as a footer note on the /stats page
+// so operators know the recovery point.
+const counterFlushInterval = 60 * time.Second
+
+// runCounterFlush periodically persists every counter via store.SaveCounters
+// and guarantees one final flush on ctx cancellation so a graceful shutdown
+// captures the last partial-minute of activity.
+func (s *Server) runCounterFlush(ctx context.Context) {
+	t := time.NewTicker(counterFlushInterval)
+	defer t.Stop()
+	flush := func() {
+		if err := s.store.SaveCounters(s.stats.Snapshot()); err != nil {
+			log.Printf("stats: flush counters: %v", err)
+		}
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			flush()
+			return
+		case <-t.C:
+			flush()
 		}
 	}
 }
@@ -909,6 +1004,10 @@ func (s *Server) enqueueViscous(a gate.Action, pkt aprs.Packet) {
 				log.Printf("gate: viscous SendRF failed: %v (%s)", err, action.Reason)
 			}
 		} else {
+			s.stats.sentRF.Add(1)
+			if strings.HasPrefix(action.Reason, "digi ") || strings.HasPrefix(action.Reason, "preempt") {
+				s.stats.digipeats.Add(1)
+			}
 			log.Printf("gate: TX %s (viscous fired — no other digi handled it)", action.Reason)
 		}
 	})
@@ -1453,5 +1552,83 @@ func haversineKm(lat1, lon1, lat2, lon2 float64) float64 {
 	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
 		math.Cos(lat1*rad)*math.Cos(lat2*rad)*math.Sin(dLon/2)*math.Sin(dLon/2)
 	return R * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+}
+
+// tlsHandshakeFilterWriter is an io.Writer that swallows net/http error-log
+// lines containing "TLS handshake error" (a single client rejecting our
+// self-signed cert produces a burst of these on every page load — pure
+// noise). Anything else passes through unchanged.
+type tlsHandshakeFilterWriter struct{ w io.Writer }
+
+func (f *tlsHandshakeFilterWriter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte("TLS handshake error")) {
+		return len(p), nil
+	}
+	return f.w.Write(p)
+}
+
+// httpsOrRedirectListener wraps the HTTPS port's raw TCP listener and peeks
+// the first byte of each connection. TLS handshake records start with 0x16;
+// anything else is plain HTTP (a user typed http:// against the HTTPS port)
+// and gets a 308 redirect to https:// on the same host:port. The TLS-looking
+// conns are returned untouched (with the peeked byte put back via a buffered
+// reader) for tls.NewListener to wrap.
+type httpsOrRedirectListener struct {
+	net.Listener
+}
+
+func (l *httpsOrRedirectListener) Accept() (net.Conn, error) {
+	for {
+		c, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		br := bufio.NewReader(c)
+		_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		b, err := br.Peek(1)
+		if err != nil {
+			_ = c.Close()
+			continue
+		}
+		_ = c.SetReadDeadline(time.Time{})
+		if b[0] == 0x16 {
+			return &peekedConn{Conn: c, r: br}, nil
+		}
+		// Plain HTTP on the HTTPS port — redirect and close in a goroutine
+		// so we keep accepting.
+		go redirectHTTPToHTTPS(c, br)
+	}
+}
+
+type peekedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (c *peekedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+
+func redirectHTTPToHTTPS(c net.Conn, br *bufio.Reader) {
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	req, err := http.ReadRequest(br)
+	if err != nil {
+		return
+	}
+	// Drain (and discard) any request body so the redirect response is
+	// well-formed under HTTP/1.1.
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+		_ = req.Body.Close()
+	}
+	host := req.Host
+	if host == "" {
+		host = c.LocalAddr().String()
+	}
+	target := "https://" + host + req.URL.RequestURI()
+	resp := "HTTP/1.1 308 Permanent Redirect\r\n" +
+		"Location: " + target + "\r\n" +
+		"Content-Length: 0\r\n" +
+		"Connection: close\r\n\r\n"
+	_, _ = c.Write([]byte(resp))
 }
 

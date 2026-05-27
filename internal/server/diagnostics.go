@@ -21,7 +21,7 @@ import (
 	"aprgo/internal/ax25"
 )
 
-const dropRingCap = 100
+const dropRingCap = 500
 
 type dropEntry struct {
 	Time   time.Time

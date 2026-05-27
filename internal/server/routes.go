@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html"
 	"html/template"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -393,11 +394,12 @@ func (s *Server) dashboardStatusCards(snap state.State) []statusCard {
 	// Stats lifted from the in-memory counters. Always read both atomic
 	// loads to a local before subtraction; #46 fix is in place but we
 	// follow the same pattern in case future code touches these.
-	rfToIS := s.stats.sentIS.Load()
-	isToRF := s.stats.igateMsgsRF.Load()
-	digi := s.stats.digipeats.Load()
-	beacons := s.stats.beacons.Load()
-	heardRF := s.stats.pktsRF.Load()
+	// Dashboard shows SESSION values (lifetime numbers live on /stats).
+	rfToIS := s.stats.View("sent_is").Session
+	isToRF := s.stats.View("igate_msgs_rf").Session
+	digi := s.stats.View("digipeats").Session
+	beacons := s.stats.View("beacons").Session
+	heardRF := s.stats.View("pkts_rf").Session
 
 	// All counts below are SESSION-lifetime (since process start). The
 	// dashboard is the at-a-glance live view; historical / daily stats
@@ -1580,7 +1582,10 @@ func (s *Server) handleMessageSend(w http.ResponseWriter, r *http.Request) {
 		Body: body, MsgID: msgID, ViaRF: rfOK, ViaIS: isOK, Raw: string(info),
 		State: state, Attempts: 1,
 	}
-	id, _ := s.store.LogMessage(msgRow)
+	id, err := s.store.LogMessage(msgRow)
+	if err != nil {
+		log.Printf("store: LogMessage out %s→%s: %v", source, dest, err)
+	}
 	msgRow.ID = id
 	if state == "pending" && msgID != "" {
 		s.enqueueRetry(msgRow)
@@ -2007,17 +2012,23 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	data := s.common("Stats", r)
 	data["Uptime"] = now.Sub(s.stats.startedAt)
 	data["StartedAt"] = s.stats.startedAt
-	data["PktsRF"] = s.stats.pktsRF.Load()
-	data["PktsIS"] = s.stats.pktsIS.Load()
-	data["PktsTX"] = s.stats.pktsTX.Load()
-	data["SentIS"] = s.stats.sentIS.Load()
-	data["SentRF"] = s.stats.sentRF.Load()
-	data["Digipeats"] = s.stats.digipeats.Load()
-	data["DropsTotal"] = s.stats.dropsTotal.Load()
-	data["RateLimited"] = s.stats.rateLimited.Load()
-	data["DistDropped"] = s.stats.distDropped.Load()
-	data["DupesDropped"] = s.stats.dupesDropped.Load()
+	data["PktsRF"] = s.stats.View("pkts_rf")
+	data["PktsIS"] = s.stats.View("pkts_is")
+	data["PktsTX"] = s.stats.View("pkts_tx")
+	data["SentIS"] = s.stats.View("sent_is")
+	data["SentRF"] = s.stats.View("sent_rf")
+	data["Digipeats"] = s.stats.View("digipeats")
+	data["IGateMsgsRF"] = s.stats.View("igate_msgs_rf")
+	data["Beacons"] = s.stats.View("beacons")
+	data["DropsTotal"] = s.stats.View("drops_total")
+	data["RateLimited"] = s.stats.View("rate_limited")
+	data["DistDropped"] = s.stats.View("dist_dropped")
+	data["DupesDropped"] = s.stats.View("dupes_dropped")
 	data["TopDropReasons"] = s.stats.TopDropReasons(8)
+	data["Mode"] = string(snap.Mode)
+	data["OfflineMode"] = snap.OfflineMode
+	data["DigipeatActive"] = snap.DigipeatWIDE1 || snap.DigipeatWIDE2 || snap.PreemptiveDigipeat
+	data["FlushSeconds"] = int(counterFlushInterval / time.Second)
 	data["Count1h"] = c1h
 	data["Count24h"] = c24h
 	data["Count7d"] = c7d

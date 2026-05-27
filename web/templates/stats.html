@@ -3,7 +3,7 @@
   {{template "pageHead" (dict
     "Eyebrow" "Operational summary"
     "Title"   "Stats"
-    "Lede"    "Aggregated counters and storage details. Session counters reset on restart; time-windowed packet counts come from the database.")}}
+    "Lede"    "Counters are tracked as lifetime totals (persistent across restarts) with a session column showing activity since this process started. Time-windowed packet counts come from the database.")}}
 
   <!-- Top: at-a-glance grid -->
   <div class="stats-grid">
@@ -15,35 +15,62 @@
     <div class="stats-card">
       <div class="eyebrow">RF connection</div>
       <div class="stats-big">{{if .RFConnected}}<span class="status-ok">● connected</span>{{else}}<span class="status-err">○ disconnected</span>{{end}}</div>
-      <div class="stats-sub">{{comma .PktsRF}} RF packets parsed</div>
+      <div class="stats-sub">{{comma .PktsRF.Lifetime}} RF packets parsed (all time)</div>
     </div>
+    {{if not .OfflineMode}}
     <div class="stats-card">
       <div class="eyebrow">APRS-IS</div>
       <div class="stats-big">{{if not .ISConnected}}{{if .ISLastError}}<span class="status-err">○ disconnected</span>{{else}}<span class="status-warn">● connecting</span>{{end}}
         {{else if .ISUnverified}}<span class="status-warn">● unverified</span>
         {{else if .ISVerified}}<span class="status-ok">● verified</span>
         {{else}}<span class="status-warn">● connecting</span>{{end}}</div>
-      <div class="stats-sub">{{comma .PktsIS}} IS packets parsed</div>
+      <div class="stats-sub">{{comma .PktsIS.Lifetime}} IS packets parsed (all time)</div>
     </div>
+    {{end}}
     <div class="stats-card">
       <div class="eyebrow">Our TX</div>
-      <div class="stats-big">{{comma .PktsTX}}</div>
-      <div class="stats-sub">beacons + gates + digipeats observed on the bus</div>
+      <div class="stats-big">{{comma .PktsTX.Lifetime}}</div>
+      <div class="stats-sub">{{comma .PktsTX.Session}} this session</div>
     </div>
   </div>
 
-  <!-- Gate decisions -->
-  <h2 class="stats-h2">Gate decisions (this session)</h2>
-  <div class="stats-grid">
-    <div class="stats-card"><div class="eyebrow">RF → IS gated</div><div class="stats-big">{{comma .SentIS}}</div></div>
-    <div class="stats-card"><div class="eyebrow">IS → RF + digipeats</div><div class="stats-big">{{comma .SentRF}}</div><div class="stats-sub">{{comma .Digipeats}} were digipeats</div></div>
-    <div class="stats-card"><div class="eyebrow">Total drops</div><div class="stats-big">{{comma .DropsTotal}}</div></div>
-    <div class="stats-card"><div class="eyebrow">Intake guards</div>
-      <div class="stats-sub"><span class="mono-num">{{comma .DupesDropped}}</span> dupes</div>
-      <div class="stats-sub"><span class="mono-num">{{comma .DistDropped}}</span> &gt;500 km bogus positions</div>
-      <div class="stats-sub"><span class="mono-num">{{comma .RateLimited}}</span> rate-limit trips ({{.BlockedCount}} active)</div>
-    </div>
-  </div>
+  <!-- Counters: session vs lifetime, mode-filtered -->
+  <h2 class="stats-h2">Counters</h2>
+  <table class="data-table stats-counts">
+    <thead>
+      <tr><th>Counter</th><th class="col-num">Session</th><th class="col-num">All time</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>RF packets parsed</td><td class="col-num mono-num">{{comma .PktsRF.Session}}</td><td class="col-num mono-num">{{comma .PktsRF.Lifetime}}</td></tr>
+      {{if not .OfflineMode}}
+      <tr><td>IS packets parsed</td><td class="col-num mono-num">{{comma .PktsIS.Session}}</td><td class="col-num mono-num">{{comma .PktsIS.Lifetime}}</td></tr>
+      {{end}}
+      <tr><td>Our TX (beacons + gates + digipeats)</td><td class="col-num mono-num">{{comma .PktsTX.Session}}</td><td class="col-num mono-num">{{comma .PktsTX.Lifetime}}</td></tr>
+      <tr><td>Beacons sent</td><td class="col-num mono-num">{{comma .Beacons.Session}}</td><td class="col-num mono-num">{{comma .Beacons.Lifetime}}</td></tr>
+      {{if not .OfflineMode}}
+      <tr><td>RF → IS gated</td><td class="col-num mono-num">{{comma .SentIS.Session}}</td><td class="col-num mono-num">{{comma .SentIS.Lifetime}}</td></tr>
+      <tr><td>IS → RF gated messages</td><td class="col-num mono-num">{{comma .IGateMsgsRF.Session}}</td><td class="col-num mono-num">{{comma .IGateMsgsRF.Lifetime}}</td></tr>
+      {{end}}
+      {{if .DigipeatActive}}
+      <tr><td>Digipeats</td><td class="col-num mono-num">{{comma .Digipeats.Session}}</td><td class="col-num mono-num">{{comma .Digipeats.Lifetime}}</td></tr>
+      {{end}}
+      <tr><td>Total RF TX (digi + IS→RF + beacons)</td><td class="col-num mono-num">{{comma .SentRF.Session}}</td><td class="col-num mono-num">{{comma .SentRF.Lifetime}}</td></tr>
+    </tbody>
+  </table>
+
+  <!-- Filter / intake-guard counters: session vs lifetime -->
+  <h2 class="stats-h2">Filters &amp; intake guards</h2>
+  <table class="data-table stats-counts">
+    <thead>
+      <tr><th>Filter</th><th class="col-num">Session</th><th class="col-num">All time</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Total gate drops</td><td class="col-num mono-num">{{comma .DropsTotal.Session}}</td><td class="col-num mono-num">{{comma .DropsTotal.Lifetime}}</td></tr>
+      <tr><td>Duplicates (own echo + neighbor digi repeats)</td><td class="col-num mono-num">{{comma .DupesDropped.Session}}</td><td class="col-num mono-num">{{comma .DupesDropped.Lifetime}}</td></tr>
+      <tr><td>Bogus positions (&gt;500 km from station)</td><td class="col-num mono-num">{{comma .DistDropped.Session}}</td><td class="col-num mono-num">{{comma .DistDropped.Lifetime}}</td></tr>
+      <tr><td>Rate-limit trips ({{.BlockedCount}} active)</td><td class="col-num mono-num">{{comma .RateLimited.Session}}</td><td class="col-num mono-num">{{comma .RateLimited.Lifetime}}</td></tr>
+    </tbody>
+  </table>
 
   <!-- Time-windowed packet activity -->
   <h2 class="stats-h2">Packet activity (from DB)</h2>
@@ -77,7 +104,7 @@
       {{end}}
     </div>
     <div>
-      <h2 class="stats-h2">Top drop reasons (this session)</h2>
+      <h2 class="stats-h2">Top drop reasons (all time)</h2>
       {{if .TopDropReasons}}
       <table class="data-table">
         <thead><tr><th>Reason</th><th class="col-num">Count</th></tr></thead>
@@ -101,5 +128,10 @@
     <div class="stats-card"><div class="eyebrow">Oldest packet</div><div class="stats-big">{{if .Storage.OldestTime.IsZero}}—{{else}}{{ago .Storage.OldestTime}} ago{{end}}</div></div>
     <div class="stats-card"><div class="eyebrow">Newest packet</div><div class="stats-big">{{if .Storage.NewestTime.IsZero}}—{{else}}{{ago .Storage.NewestTime}} ago{{end}}</div></div>
   </div>
+
+  <p class="dim" style="margin-top: 2em; font-size: 0.85em;">
+    All-time counters are persisted to SQLite every {{.FlushSeconds}} seconds and on graceful shutdown.
+    A hard crash can lose up to {{.FlushSeconds}} seconds of counter activity.
+  </p>
 </section>
 {{template "footer" .}}{{end}}

@@ -75,6 +75,14 @@ CREATE TABLE IF NOT EXISTS packets (
 CREATE INDEX IF NOT EXISTS idx_packets_source_ts ON packets(source, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_packets_ts ON packets(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_packets_pos_ts ON packets(ts) WHERE lat IS NOT NULL;
+
+-- Persistent operational counters. Holds lifetime (process-spanning) values
+-- for the stats page's session-vs-all-time split. Server loads on startup,
+-- flushes every minute + on graceful shutdown.
+CREATE TABLE IF NOT EXISTS counters (
+    name  TEXT PRIMARY KEY,
+    value INTEGER NOT NULL DEFAULT 0
+);
 `
 
 // Open opens the SQLite store at path, creating the schema if missing.
@@ -819,4 +827,63 @@ func b2i(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// LoadCounters reads all (name, value) pairs from the counters table.
+// Returns an empty map if the table is empty (first run after schema create).
+func (s *Store) LoadCounters() (map[string]uint64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(`SELECT name, value FROM counters`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]uint64)
+	for rows.Next() {
+		var name string
+		var v int64
+		if err := rows.Scan(&name, &v); err != nil {
+			return nil, err
+		}
+		if v < 0 {
+			v = 0
+		}
+		out[name] = uint64(v)
+	}
+	return out, rows.Err()
+}
+
+// SaveCounters upserts every (name, value) pair in a single transaction.
+// SQLite stores INTEGER as signed 64-bit; counters that exceed int64 max
+// (~9.2e18) get clamped — fine for our use case (a 100 pkt/sec firehose
+// hits that ceiling in ~2.9 billion years).
+func (s *Store) SaveCounters(values map[string]uint64) error {
+	if len(values) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`INSERT INTO counters(name, value) VALUES(?, ?)
+		ON CONFLICT(name) DO UPDATE SET value=excluded.value`)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+	for name, v := range values {
+		signed := int64(v)
+		if v > 1<<63-1 {
+			signed = 1<<63 - 1
+		}
+		if _, err := stmt.Exec(name, signed); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
 }
