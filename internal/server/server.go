@@ -34,6 +34,7 @@ import (
 	"aprgo/internal/state"
 	"aprgo/internal/store"
 	"aprgo/internal/tlscert"
+	"aprgo/internal/webhook"
 	"aprgo/web"
 )
 
@@ -59,11 +60,12 @@ type Server struct {
 	auth   *auth.Authenticator
 	bus    *bus.Bus
 	store  *store.Store
-	rf     *rf.RF
-	is     *igate.Client
-	beacon *beacon.Beacon
-	tmpl   *template.Template
-	static map[string]staticAsset
+	rf       *rf.RF
+	is       *igate.Client
+	beacon   *beacon.Beacon
+	webhooks *webhook.Manager
+	tmpl     *template.Template
+	static   map[string]staticAsset
 
 	dupe *dupeTable
 	// msgDupe collapses "same message body, different path" repeats so a
@@ -239,6 +241,7 @@ func New(opts Options) (*Server, error) {
 	s.is = igate.New(st, b)
 	s.beacon = beacon.New(st, s.rf, b)
 	s.beacon.SetIS(s.is) // enables IS-only beacon transmission for ModeIS
+	s.webhooks = webhook.New(st, b)
 	return s, nil
 }
 
@@ -314,6 +317,10 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	spawn("beacon", s.beacon.Run)
 	spawn("parseLoop", s.parseLoop)
+	// Webhook dispatcher subscribes to bus.Packets. Runs unconditionally —
+	// it's cheap when no webhooks are configured, and avoids a restart
+	// dependency on the (live-editable) webhook list.
+	spawn("webhooks", s.webhooks.Run)
 	spawn("pruner", s.runPruner)
 	spawn("wdraftsJanitor", s.wdraftsJanitor)
 	spawn("pairsJanitor", s.pairsJanitor)
@@ -771,12 +778,20 @@ func (s *Server) parseLoop(ctx context.Context) {
 						}
 					}
 				}
+				// The station that sent this ack/rej is the originator — for a
+				// third-party/gated ack that's MsgOrigSrc, not the relay in
+				// Frame.Src. Matching the outbound row on the relay would fail
+				// to clear the retry. Mirrors the message-source logic above.
+				acker := pkt.Frame.Src
+				if pkt.Decoded.MsgOrigSrc != "" {
+					acker = pkt.Decoded.MsgOrigSrc
+				}
 				if pkt.Decoded.IsAck {
 					// MarkAck returns the message ID it just flipped so we
 					// can yank it from the retry queue immediately — without
 					// this the retry worker might fire a final retransmit
 					// after the ack already landed (cosmetic, but ugly).
-					id, _ := s.store.MarkAck(pkt.Decoded.MsgTo, pkt.Frame.Src, pkt.Decoded.AckedID)
+					id, _ := s.store.MarkAck(pkt.Decoded.MsgTo, acker, pkt.Decoded.AckedID)
 					if id > 0 {
 						s.retries.Remove(id)
 					}
@@ -785,7 +800,7 @@ func (s *Server) parseLoop(ctx context.Context) {
 					// Peer refused the message. Stop retrying (same as ack
 					// at the protocol level) but mark the row as rejected so
 					// the UI can distinguish delivered from refused.
-					id, _ := s.store.MarkRej(pkt.Decoded.MsgTo, pkt.Frame.Src, pkt.Decoded.AckedID)
+					id, _ := s.store.MarkRej(pkt.Decoded.MsgTo, acker, pkt.Decoded.AckedID)
 					if id > 0 {
 						s.retries.Remove(id)
 					}
@@ -796,7 +811,7 @@ func (s *Server) parseLoop(ctx context.Context) {
 					// a standalone ack does. Source/dest are swapped relative
 					// to a normal ack: pkt.Frame.Src is the peer, pkt.Decoded.MsgTo
 					// is us.
-					id, _ := s.store.MarkAck(pkt.Decoded.MsgTo, pkt.Frame.Src, pkt.Decoded.ReplyAckID)
+					id, _ := s.store.MarkAck(pkt.Decoded.MsgTo, acker, pkt.Decoded.ReplyAckID)
 					if id > 0 {
 						s.retries.Remove(id)
 					}
@@ -1350,6 +1365,16 @@ var funcMap = template.FuncMap{
 		}
 	},
 	"join":   strings.Join,
+	// hasStr reports whether list contains v — used by the webhooks form to
+	// pre-check the per-type filter checkboxes.
+	"hasStr": func(list []string, v string) bool {
+		for _, x := range list {
+			if x == v {
+				return true
+			}
+		}
+		return false
+	},
 	"callsignBase": func(s string) string {
 		if i := strings.IndexByte(s, '-'); i >= 0 {
 			return s[:i]

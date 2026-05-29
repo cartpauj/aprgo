@@ -75,6 +75,65 @@ type Beacon struct {
 	AmbiguityLevel int `json:"ambiguity_level,omitempty"`
 }
 
+// Webhook is one outbound HTTP push target. When a packet on bus.Packets
+// matches this webhook's filters, aprgo POSTs a JSON body to URL. Webhooks
+// are an outbound integration only — aprgo never opens an inbound listener
+// for them, so they reuse the existing /settings auth + transport gate and
+// add no new public surface.
+//
+// IMPORTANT: a webhook can only ever fire on packets that reach bus.Packets,
+// which by design excludes the APRS-IS firehose (see server.parseLoop's
+// showOnDashboard gate). IS-origin packets are limited to messages addressed
+// to this station, so Source=="is" forwards only those — never the full feed.
+type Webhook struct {
+	Name    string `json:"name"`    // unique label, also the status key
+	URL     string `json:"url"`     // http(s):// target
+	Enabled bool   `json:"enabled"` // false = configured but inert
+
+	// Source selects which received origins fire this webhook:
+	// "rf" | "is" | "both" (empty = "both"). TX-origin (our own
+	// transmissions) is opt-in separately via IncludeTX, since it's
+	// neither RF- nor IS-received.
+	Source    string `json:"source,omitempty"`
+	IncludeTX bool   `json:"include_tx,omitempty"`
+
+	// Types, when non-empty, restricts firing to these classified packet
+	// types: position | weather | telemetry | message | object | status |
+	// other. Empty = all types.
+	Types []string `json:"types,omitempty"`
+
+	// Callsigns, when non-empty, is an allowlist matched against the packet
+	// source — the SENDER (case-insensitive). A trailing "*" is a prefix
+	// wildcard, e.g. "N0CALL*" matches every SSID. Empty = all senders.
+	Callsigns []string `json:"callsigns,omitempty"`
+
+	// ToCallsigns, when non-empty, matches the message ADDRESSEE (the
+	// callsign a message is sent to). Only message packets carry an
+	// addressee, so a non-empty value implicitly restricts firing to
+	// messages. Same wildcard rules as Callsigns. Empty = any destination.
+	ToCallsigns []string `json:"to_callsigns,omitempty"`
+
+	// MatchText, when non-empty, restricts firing to message packets whose
+	// body satisfies MatchMode ("contains" | "equals"; empty = "contains").
+	// MatchCase makes the comparison case-sensitive (default insensitive).
+	// A non-message packet never matches a non-empty MatchText.
+	MatchMode string `json:"match_mode,omitempty"`
+	MatchText string `json:"match_text,omitempty"`
+	MatchCase bool   `json:"match_case,omitempty"`
+
+	// HeaderName/HeaderValue is an optional custom request header sent on
+	// every delivery — e.g. "Authorization: Bearer <token>" for Home
+	// Assistant, or "X-API-Key: <secret>". Empty = no extra header.
+	HeaderName  string `json:"header_name,omitempty"`
+	HeaderValue string `json:"header_value,omitempty"`
+
+	// InsecureSkipTLS accepts a self-signed / untrusted TLS certificate on
+	// an https:// target. Off by default (verify). On par with how aprgo
+	// itself serves a self-signed cert — local receivers (Home Assistant,
+	// etc.) commonly do the same.
+	InsecureSkipTLS bool `json:"insecure_skip_tls,omitempty"`
+}
+
 // State is the JSON-persisted blob.
 type State struct {
 	// Identity
@@ -208,6 +267,10 @@ type State struct {
 	Timezone          string `json:"timezone,omitempty"`
 	// TimeFormat is "12h" or "24h" (default "24h"). Empty defaults to 24h.
 	TimeFormat string `json:"time_format,omitempty"`
+
+	// Webhooks: outbound HTTP push targets. See the Webhook type. Empty =
+	// no webhooks configured (the dispatcher still runs but matches nothing).
+	Webhooks []Webhook `json:"webhooks,omitempty"`
 
 	// First-run wizard tracking
 	SetupComplete bool `json:"setup_complete"`

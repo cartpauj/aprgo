@@ -8,6 +8,18 @@
     });
   }
 
+  // Same for the Account form — reload so the one-way lockdown checkboxes
+  // disappear and the "active lockdowns" banner updates. A username change
+  // intentionally invalidates the session, so the reload then lands on the
+  // login page (matching the form's hint); a password change re-issues the
+  // cookie server-side, so the operator stays signed in.
+  var acctForm = document.querySelector('form[hx-post="/settings/account"]');
+  if (acctForm && window.htmx) {
+    acctForm.addEventListener("htmx:afterRequest", function (e) {
+      if (e.detail.successful) setTimeout(function () { location.reload(); }, 700);
+    });
+  }
+
   var addBtn = document.getElementById("beacon-add");
   var countEl = document.getElementById("beacon-count");
   var beaconList = document.getElementById("beacon-list");
@@ -422,4 +434,170 @@
   }
   all.addEventListener("change", sync);
   sync();
+})();
+
+// ─── Webhooks: add/remove rows, reload after save, scheme-aware hints ────
+(function () {
+  var list = document.getElementById("webhook-list");
+  if (!list) return; // section not rendered (settings locked)
+  var addBtn = document.getElementById("webhook-add");
+  var countEl = document.getElementById("webhook-count");
+  var TYPES = ["position", "weather", "telemetry", "message", "object", "status", "other"];
+
+  // Reload after a successful SAVE (refreshes status lines + row indices),
+  // but NOT after a "Send test" — that posts to a different path and should
+  // leave its flash visible.
+  var form = document.querySelector('form[hx-post="/settings/webhooks/save"]');
+  if (form && window.htmx) {
+    form.addEventListener("htmx:afterRequest", function (e) {
+      var cfg = e.detail && e.detail.requestConfig;
+      if (e.detail.successful && cfg && cfg.path === "/settings/webhooks/save") {
+        setTimeout(function () { location.reload(); }, 700);
+      }
+    });
+  }
+
+  // Show the "skip TLS" checkbox only for https targets; show the cleartext
+  // warning only when an http target also carries a header value.
+  function syncRow(row) {
+    var url = row.querySelector(".webhook-url");
+    var insecure = row.querySelector(".webhook-insecure");
+    var warn = row.querySelector(".webhook-http-warn");
+    if (!url) return;
+    var v = (url.value || "").trim().toLowerCase();
+    var isHTTPS = v.indexOf("https://") === 0;
+    var isHTTP = v.indexOf("http://") === 0;
+    if (insecure) insecure.style.display = isHTTPS ? "" : "none";
+    if (warn) {
+      var hv = row.querySelector('input[name$="_header_value"]');
+      var hasHeader = hv && hv.value.trim() !== "";
+      warn.hidden = !(isHTTP && hasHeader);
+    }
+  }
+  function syncAll() {
+    list.querySelectorAll(".webhook-row").forEach(syncRow);
+  }
+  list.addEventListener("input", function (e) {
+    var row = e.target.closest(".webhook-row");
+    if (row) syncRow(row);
+  });
+  syncAll();
+
+  // Soft-delete: flip the hidden remove flag so the server drops the row on
+  // save, then hide it. Mirrors the beacon row pattern.
+  list.addEventListener("click", function (e) {
+    var btn = e.target.closest(".webhook-remove");
+    if (!btn) return;
+    var row = btn.closest(".webhook-row");
+    if (!row) return;
+    var flag = row.querySelector(".webhook-remove-flag");
+    if (flag) flag.value = "1";
+    row.style.display = "none";
+  });
+
+  if (!addBtn || !countEl) return;
+  addBtn.addEventListener("click", function () {
+    var i = parseInt(countEl.value, 10) || 0;
+    var fs = document.createElement("fieldset");
+    fs.className = "webhook-row";
+    fs.innerHTML = rowTemplate(i);
+    list.appendChild(fs);
+    countEl.value = String(i + 1);
+    // Bind htmx to the new row's "Send test" button (htmx only processes
+    // dynamically-inserted markup when asked).
+    if (window.htmx) window.htmx.process(fs);
+    syncRow(fs);
+    var nameEl = fs.querySelector('input[name="webhook_' + i + '_name"]');
+    if (nameEl) nameEl.focus();
+  });
+
+  // Mirrors the server-side {{range .Webhooks}} row. Keep in sync with the
+  // markup in settings.html. New rows default: enabled, source=both.
+  function rowTemplate(i) {
+    var typeBoxes = "";
+    for (var t = 0; t < TYPES.length; t++) {
+      typeBoxes +=
+        '<label class="cb"><input type="checkbox" name="webhook_' + i + '_type_' + TYPES[t] + '" value="1"> ' + TYPES[t] + "</label>";
+    }
+    return (
+      '<input type="hidden" name="webhook_' + i + '_remove" value="0" class="webhook-remove-flag">' +
+      '<div class="webhook-head">' +
+        '<label class="cb"><input type="checkbox" name="webhook_' + i + '_enabled" value="1" checked> Enabled</label>' +
+        '<label class="webhook-head-name-label">Name<input type="text" class="webhook-head-name" name="webhook_' + i + '_name" value="webhook' + i + '" maxlength="32" required></label>' +
+        '<button type="button" class="btn ghost webhook-remove">Remove</button>' +
+      '</div>' +
+      '<div class="webhook-body">' +
+        '<label>URL<input type="url" class="webhook-url" name="webhook_' + i + '_url" placeholder="https://ha.local:8123/api/webhook/aprs_xxxxx" required></label>' +
+        '<label class="cb webhook-insecure"><input type="checkbox" name="webhook_' + i + '_insecure" value="1"> Skip TLS verification (self-signed https receiver)</label>' +
+        '<p class="hint webhook-http-warn" hidden>⚠️ Header below is sent unencrypted over plain http://.</p>' +
+        '<div class="webhook-filter-grid">' +
+          '<div class="webhook-col"><span class="webhook-field-label">Source</span>' +
+            '<div class="webhook-radios">' +
+              '<label class="cb"><input type="radio" name="webhook_' + i + '_source" value="rf"> RF only</label>' +
+              '<label class="cb"><input type="radio" name="webhook_' + i + '_source" value="is"> IS only</label>' +
+              '<label class="cb"><input type="radio" name="webhook_' + i + '_source" value="both" checked> Both</label>' +
+            '</div>' +
+            '<label class="cb"><input type="checkbox" name="webhook_' + i + '_include_tx" value="1"> Include my own transmissions</label>' +
+          '</div>' +
+          '<div class="webhook-col"><span class="webhook-field-label">Types <span class="hint-inline">none = all types</span></span>' +
+            '<div class="webhook-types">' + typeBoxes + '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="webhook-grid">' +
+          '<label><span class="label-head">From callsign(s)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Matches the station that <strong>sent</strong> the packet (its source). Comma-separated; trailing <code>*</code> = prefix wildcard. Blank = any sender.</span></span></span>' +
+            '<input type="text" name="webhook_' + i + '_callsigns" placeholder="KC9XYZ-9, N0CALL*"></label>' +
+          '<label><span class="label-head">To callsign(s)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Matches the <strong>addressee of a message</strong> (who it was sent to). Only messages have an addressee, so this limits the webhook to messages. Blank = any destination.</span></span></span>' +
+            '<input type="text" name="webhook_' + i + '_to_callsigns" placeholder="(any)"></label>' +
+        '</div>' +
+        '<div class="webhook-col"><span class="webhook-field-label">Message text <span class="hint-inline">matches message packets only</span></span>' +
+          '<div class="webhook-match-row">' +
+            '<select name="webhook_' + i + '_match_mode"><option value="contains" selected>contains</option><option value="equals">equals</option></select>' +
+            '<input type="text" name="webhook_' + i + '_match_text" placeholder="(blank = any message)">' +
+            '<label class="cb"><input type="checkbox" name="webhook_' + i + '_match_case" value="1"> Aa case-sensitive</label>' +
+          '</div>' +
+        '</div>' +
+        '<div class="webhook-grid">' +
+          '<label>Custom header name<input type="text" name="webhook_' + i + '_header_name" placeholder="Authorization" autocomplete="off"></label>' +
+          '<label>Header value<input type="password" name="webhook_' + i + '_header_value" placeholder="Bearer …" autocomplete="off"></label>' +
+        '</div>' +
+      '</div>' +
+      '<div class="webhook-status"><span class="webhook-status-dot idle"></span> not saved yet — save before testing' +
+        '<button type="button" class="btn ghost webhook-test" hx-post="/settings/webhooks/test" hx-vals=\'{"idx": "' + i + '"}\' hx-target="#wh-flash" hx-swap="innerHTML" hx-include="[name=csrf_token]">Send test</button>' +
+      '</div>'
+    );
+  }
+})();
+
+// ─── Settings tabs ───────────────────────────────────────────────────────
+// Show one section (Station / Webhooks / Account) at a time so the page
+// isn't a wall of stacked forms with three save bars. The active tab is
+// mirrored to the URL hash so it survives the location.reload() that the
+// Station/Webhooks forms do after a successful save.
+(function () {
+  var tabs = document.querySelectorAll(".settings-tab");
+  if (!tabs.length) return;
+  var panels = document.querySelectorAll(".settings-tab-panel");
+  function activate(name) {
+    var matched = false;
+    tabs.forEach(function (t) {
+      var on = t.dataset.tab === name;
+      t.classList.toggle("is-active", on);
+      t.setAttribute("aria-selected", on ? "true" : "false");
+      if (on) matched = true;
+    });
+    if (!matched) return;
+    panels.forEach(function (p) {
+      p.classList.toggle("is-active", p.id === "tab-" + name);
+    });
+  }
+  tabs.forEach(function (t) {
+    t.addEventListener("click", function () {
+      activate(t.dataset.tab);
+      // replaceState (not location.hash =) to avoid scrolling to the panel
+      // and to keep the back button clean.
+      history.replaceState(null, "", "#" + t.dataset.tab);
+    });
+  });
+  var initial = (location.hash || "").replace(/^#/, "");
+  if (initial) activate(initial);
 })();

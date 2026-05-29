@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"aprgo/internal/state"
+	"aprgo/internal/webhook"
 )
 
 // sanitizeAPRSField strips bytes that would break APRS-IS line protocol or
@@ -187,6 +189,103 @@ func parseBeaconsForm(r interface {
 		})
 	}
 	return out, errs
+}
+
+// parseWebhooksForm rebuilds the []state.Webhook list from the indexed form
+// fields (webhook_<i>_*) posted by the Settings → Webhooks form. Mirrors
+// parseBeaconsForm: a removed or fully-empty row is dropped; per-row errors
+// are accumulated so the operator can fix them in one pass. Header values are
+// preserved verbatim (the form round-trips them in a password input).
+func parseWebhooksForm(r interface {
+	FormValue(string) string
+}) ([]state.Webhook, []string) {
+	var errs []string
+	n, _ := strconv.Atoi(r.FormValue("webhook_count"))
+	if n < 0 || n > 64 {
+		return nil, []string{"too many webhooks"}
+	}
+	out := make([]state.Webhook, 0, n)
+	seen := map[string]bool{}
+	for i := 0; i < n; i++ {
+		if r.FormValue(fmt.Sprintf("webhook_%d_remove", i)) == "1" {
+			continue
+		}
+		name := strings.TrimSpace(r.FormValue(fmt.Sprintf("webhook_%d_name", i)))
+		urlStr := strings.TrimSpace(r.FormValue(fmt.Sprintf("webhook_%d_url", i)))
+		// Empty row (operator added then abandoned it): drop silently.
+		if name == "" && urlStr == "" {
+			continue
+		}
+		if name == "" {
+			errs = append(errs, fmt.Sprintf("webhook[%d]: name required", i))
+			continue
+		}
+		key := strings.ToLower(name)
+		if seen[key] {
+			errs = append(errs, fmt.Sprintf("duplicate webhook name %q", name))
+			continue
+		}
+		if err := validateWebhookURL(urlStr); err != nil {
+			errs = append(errs, fmt.Sprintf("webhook %q: %s", name, err.Error()))
+			continue
+		}
+		seen[key] = true
+
+		source := r.FormValue(fmt.Sprintf("webhook_%d_source", i))
+		switch source {
+		case "rf", "is", "both":
+		default:
+			source = "both"
+		}
+		var types []string
+		for _, t := range webhook.Types {
+			if r.FormValue(fmt.Sprintf("webhook_%d_type_%s", i, t)) == "1" {
+				types = append(types, t)
+			}
+		}
+		matchMode := r.FormValue(fmt.Sprintf("webhook_%d_match_mode", i))
+		if matchMode != "equals" {
+			matchMode = "contains"
+		}
+		out = append(out, state.Webhook{
+			Name:            name,
+			URL:             urlStr,
+			Enabled:         r.FormValue(fmt.Sprintf("webhook_%d_enabled", i)) == "1",
+			Source:          source,
+			IncludeTX:       r.FormValue(fmt.Sprintf("webhook_%d_include_tx", i)) == "1",
+			Types:           types,
+			Callsigns:       splitCSV(strings.ToUpper(r.FormValue(fmt.Sprintf("webhook_%d_callsigns", i)))),
+			ToCallsigns:     splitCSV(strings.ToUpper(r.FormValue(fmt.Sprintf("webhook_%d_to_callsigns", i)))),
+			MatchMode:       matchMode,
+			MatchText:       strings.TrimSpace(r.FormValue(fmt.Sprintf("webhook_%d_match_text", i))),
+			MatchCase:       r.FormValue(fmt.Sprintf("webhook_%d_match_case", i)) == "1",
+			HeaderName:      strings.TrimSpace(r.FormValue(fmt.Sprintf("webhook_%d_header_name", i))),
+			HeaderValue:     strings.TrimSpace(r.FormValue(fmt.Sprintf("webhook_%d_header_value", i))),
+			InsecureSkipTLS: r.FormValue(fmt.Sprintf("webhook_%d_insecure", i)) == "1",
+		})
+	}
+	return out, errs
+}
+
+// validateWebhookURL requires a syntactically valid absolute http(s) URL with
+// a host. We deliberately do NOT block loopback / private addresses: the
+// operator is the authenticated admin and a LAN receiver (e.g. Home Assistant
+// on the same network) is the primary use case, not an SSRF threat.
+func validateWebhookURL(s string) error {
+	if s == "" {
+		return errors.New("URL required")
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %v", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return errors.New("URL must start with http:// or https://")
+	}
+	if u.Host == "" {
+		return errors.New("URL is missing a host")
+	}
+	return nil
 }
 
 // isFilterTermRE matches one APRS-IS server-filter term. The grammar is

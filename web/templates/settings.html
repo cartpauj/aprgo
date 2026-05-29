@@ -22,6 +22,13 @@
   {{if .Lockdown.LockSettings}}
   <div class="flash err">Settings are locked by aprgo.conf — all fields below are hidden. Edit <code>/var/lib/aprgo/aprgo.conf</code> on the server and restart aprgo to undo.</div>
   {{else}}
+  <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+    <button type="button" class="settings-tab is-active" id="tabbtn-station"  role="tab" aria-controls="tab-station"  aria-selected="true"  data-tab="station">Station</button>
+    <button type="button" class="settings-tab"           id="tabbtn-webhooks" role="tab" aria-controls="tab-webhooks" aria-selected="false" data-tab="webhooks">Webhooks</button>
+    <button type="button" class="settings-tab"           id="tabbtn-account"  role="tab" aria-controls="tab-account"  aria-selected="false" data-tab="account">Account</button>
+  </div>
+
+  <div class="settings-tab-panel is-active" id="tab-station" role="tabpanel" aria-labelledby="tabbtn-station">
   <form class="settings-form" hx-post="/settings/save" hx-target="#save-flash" hx-swap="innerHTML">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
 
@@ -328,17 +335,131 @@
 
     {{template "saveBar" (dict "Hint" "Saves apply live. Theme change reloads the page." "FlashID" "save-flash" "Label" "Save settings")}}
   </form>
-  {{end}}
+  </div>{{/* /tab-station */}}
 
-  {{if not .Lockdown.LockSettings}}
-  <details class="settings-section settings-section--collapsible">
-    <summary class="settings-section-head">
-      <span class="title">Account &amp; hardening</span>
-      <span class="sub">Operator credentials and UI-lockdown switches.</span>
-    </summary>
-    <div class="settings-section-body stack-3">
-      <form class="settings-form" hx-post="/settings/account" hx-target="#acct-flash" hx-swap="innerHTML">
-        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <div class="settings-tab-panel" id="tab-webhooks" role="tabpanel" aria-labelledby="tabbtn-webhooks">
+  <form class="settings-form" hx-post="/settings/webhooks/save" hx-target="#wh-flash" hx-swap="innerHTML">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    {{template "settingsSectionOpen" (dict "Title" "Webhooks" "Sub" "Push received packets to other services (Home Assistant, Node-RED, Discord …). Outbound only.")}}
+      <p class="hint">
+        A webhook POSTs a JSON body to a URL whenever a received packet matches its filters.
+        Only packets that reach the live feed are eligible — that's <strong>everything heard on RF</strong>, your own transmissions, and APRS-IS <strong>messages addressed to this station</strong> (not the full APRS-IS feed).
+      </p>
+      {{if eq .St.Mode "is"}}
+      <div class="flash warn">
+        <strong>IS-only mode:</strong> there's no RF, so webhooks only fire on APRS-IS messages addressed to <code>{{.St.Callsign}}</code> (and your own transmissions if you enable that below). Most filters will match very little here.
+      </div>
+      {{end}}
+      {{if eq .St.Mode "offline"}}
+      <div class="flash warn">
+        <strong>Offline mode:</strong> APRS-IS is disabled, so only RF traffic (and your own transmissions) can fire a webhook. Deliveries can only reach receivers on this device's network — a raw LAN IP is most reliable when there's no internet.
+      </div>
+      {{end}}
+      {{if eq .St.Mode "messaging"}}
+      <div class="flash">
+        <strong>Note:</strong> messaging-only mode limits what's gated to APRS-IS, not what's sent here — webhooks still receive the full RF stream.
+      </div>
+      {{end}}
+
+      <div id="webhook-list" class="stack-3">
+      {{range $i, $w := .Webhooks}}
+        {{$st := index $.WebhookStatus $w.Name}}
+        <fieldset class="webhook-row">
+          <input type="hidden" name="webhook_{{$i}}_remove" value="0" class="webhook-remove-flag">
+          <div class="webhook-head">
+            <label class="cb"><input type="checkbox" name="webhook_{{$i}}_enabled" value="1" {{if $w.Enabled}}checked{{end}}> Enabled</label>
+            <label class="webhook-head-name-label">Name
+              <input type="text" class="webhook-head-name" name="webhook_{{$i}}_name" value="{{$w.Name}}" maxlength="32" required title="Unique label; also the key for the status line below">
+            </label>
+            <button type="button" class="btn ghost webhook-remove">Remove</button>
+          </div>
+
+          <div class="webhook-body">
+            <label>URL
+              <input type="url" class="webhook-url" name="webhook_{{$i}}_url" value="{{$w.URL}}" placeholder="https://ha.local:8123/api/webhook/aprs_xxxxx" required>
+            </label>
+            <label class="cb webhook-insecure"><input type="checkbox" name="webhook_{{$i}}_insecure" value="1" {{if $w.InsecureSkipTLS}}checked{{end}}> Skip TLS verification (self-signed https receiver)</label>
+            <p class="hint webhook-http-warn" hidden>⚠️ Header below is sent unencrypted over plain <code>http://</code>.</p>
+
+            <div class="webhook-filter-grid">
+              <div class="webhook-col">
+                <span class="webhook-field-label">Source</span>
+                <div class="webhook-radios">
+                  <label class="cb"><input type="radio" name="webhook_{{$i}}_source" value="rf" {{if eq $w.Source "rf"}}checked{{end}}> RF only</label>
+                  <label class="cb"><input type="radio" name="webhook_{{$i}}_source" value="is" {{if eq $w.Source "is"}}checked{{end}}> IS only</label>
+                  <label class="cb"><input type="radio" name="webhook_{{$i}}_source" value="both" {{if or (eq $w.Source "both") (eq $w.Source "")}}checked{{end}}> Both</label>
+                </div>
+                <label class="cb"><input type="checkbox" name="webhook_{{$i}}_include_tx" value="1" {{if $w.IncludeTX}}checked{{end}}> Include my own transmissions</label>
+              </div>
+              <div class="webhook-col">
+                <span class="webhook-field-label">Types <span class="hint-inline">none = all types</span></span>
+                <div class="webhook-types">
+                {{range $.WebhookTypes}}
+                  <label class="cb"><input type="checkbox" name="webhook_{{$i}}_type_{{.}}" value="1" {{if hasStr $w.Types .}}checked{{end}}> {{.}}</label>
+                {{end}}
+                </div>
+              </div>
+            </div>
+
+            <div class="webhook-grid">
+              <label><span class="label-head">From callsign(s)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Matches the station that <strong>sent</strong> the packet (its source). Comma-separated allowlist; a trailing <code>*</code> is a prefix wildcard (e.g. <code>N0CALL*</code> = every SSID). Blank = any sender.</span></span></span>
+                <input type="text" name="webhook_{{$i}}_callsigns" value="{{join $w.Callsigns ", "}}" placeholder="KC9XYZ-9, N0CALL*">
+              </label>
+              <label><span class="label-head">To callsign(s)<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Matches the <strong>addressee of a message</strong> (who it was sent to). Only message packets have an addressee, so setting this limits the webhook to messages. Same wildcard rules. Blank = any destination.</span></span></span>
+                <input type="text" name="webhook_{{$i}}_to_callsigns" value="{{join $w.ToCallsigns ", "}}" placeholder="{{$.St.Callsign}}">
+              </label>
+            </div>
+
+            <div class="webhook-col">
+              <span class="webhook-field-label">Message text <span class="hint-inline">matches message packets only</span></span>
+              <div class="webhook-match-row">
+                <select name="webhook_{{$i}}_match_mode">
+                  <option value="contains" {{if ne $w.MatchMode "equals"}}selected{{end}}>contains</option>
+                  <option value="equals" {{if eq $w.MatchMode "equals"}}selected{{end}}>equals</option>
+                </select>
+                <input type="text" name="webhook_{{$i}}_match_text" value="{{$w.MatchText}}" placeholder="(blank = any message)">
+                <label class="cb"><input type="checkbox" name="webhook_{{$i}}_match_case" value="1" {{if $w.MatchCase}}checked{{end}}> Aa case-sensitive</label>
+              </div>
+            </div>
+
+            <div class="webhook-grid">
+              <label><span class="label-head">Custom header name<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Optional. Sent on every delivery — e.g. <code>Authorization</code> with value <code>Bearer &lt;token&gt;</code> for Home Assistant, or <code>X-API-Key</code>. Leave blank for none.</span></span></span>
+                <input type="text" name="webhook_{{$i}}_header_name" value="{{$w.HeaderName}}" placeholder="Authorization" autocomplete="off">
+              </label>
+              <label>Header value
+                <input type="password" name="webhook_{{$i}}_header_value" value="{{$w.HeaderValue}}" placeholder="Bearer …" autocomplete="off">
+              </label>
+            </div>
+          </div>
+
+          <div class="webhook-status">
+            {{if $st.LastAttempt.IsZero}}
+              <span class="webhook-status-dot idle"></span> not yet delivered
+            {{else}}
+              <span class="webhook-status-dot {{if $st.LastErr}}err{{else}}ok{{end}}"></span>
+              {{if $st.LastErr}}last: {{$st.LastErr}}{{else}}last: HTTP {{$st.LastCode}}{{end}}
+              · <time class="rel-time" data-ts="{{unix $st.LastAttempt}}" title="{{fmtDateTime $st.LastAttempt $.TZ $.TF}}"></time>
+              · {{$st.Sent}} sent / {{$st.Failed}} failed
+            {{end}}
+            <button type="button" class="btn ghost webhook-test" hx-post="/settings/webhooks/test" hx-vals='{"idx": "{{$i}}"}' hx-target="#wh-flash" hx-swap="innerHTML" hx-include="[name=csrf_token]">Send test</button>
+          </div>
+        </fieldset>
+      {{end}}
+      </div>
+      <input type="hidden" name="webhook_count" id="webhook-count" value="{{len .Webhooks}}">
+      <div class="beacon-add-row">
+        <button type="button" class="btn ghost" id="webhook-add">+ Add webhook</button>
+        <span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">After adding a webhook, save before using “Send test” — the test exercises the saved configuration.</span></span>
+      </div>
+    {{template "settingsSectionClose" .}}
+    {{template "saveBar" (dict "Hint" "Saved live. Add an endpoint, save, then Send test to confirm wiring." "FlashID" "wh-flash" "Label" "Save webhooks")}}
+  </form>
+  </div>{{/* /tab-webhooks */}}
+
+  <div class="settings-tab-panel" id="tab-account" role="tabpanel" aria-labelledby="tabbtn-account">
+  <form class="settings-form" hx-post="/settings/account" hx-target="#acct-flash" hx-swap="innerHTML">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    {{template "settingsSectionOpen" (dict "Title" "Account & hardening" "Sub" "Operator credentials and UI-lockdown switches." "BodyClass" "stack-3")}}
 
         <div class="grid-cols-fit">
           <label><span class="label-head">Username<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Lowercase letters, digits, <code>-</code> and <code>_</code> only. 1–32 chars. Renaming invalidates existing sessions.</span></span></span>
@@ -379,10 +500,10 @@
           {{end}}
         </div>
 
-        {{template "saveBar" (dict "Hint" "Changes apply live. You'll stay signed in unless you renamed the user." "FlashID" "acct-flash" "Label" "Save account")}}
-      </form>
-    </div>
-  </details>
+    {{template "settingsSectionClose" .}}
+    {{template "saveBar" (dict "Hint" "Changes apply live. You'll stay signed in unless you renamed the user." "FlashID" "acct-flash" "Label" "Save account")}}
+  </form>
+  </div>{{/* /tab-account */}}
   {{end}}
 </section>
 <script src="/static/js/settings.js" defer></script>

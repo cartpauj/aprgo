@@ -410,6 +410,13 @@ func (s *Store) LogMessage(m Message) (int64, error) {
 	if state == "" {
 		state = "acked"
 	}
+	// Canonicalize callsigns to uppercase (APRS calls are case-insensitive;
+	// the stations table normalizes the same way). Keeps conversation grouping
+	// and ack-matching consistent regardless of the case a relay or operator
+	// supplied — e.g. a lowercase third-party MsgOrigSrc vs an operator-typed
+	// uppercase reply would otherwise split into two conversations.
+	m.Source = strings.ToUpper(m.Source)
+	m.Dest = strings.ToUpper(m.Dest)
 	r, err := s.db.Exec(`INSERT INTO messages (ts, direction, source, dest, body, msg_id, via_rf, via_is, acked, raw, state, attempts)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.Time.Unix(), m.Direction, m.Source, m.Dest, m.Body, m.MsgID, b2i(m.ViaRF), b2i(m.ViaIS), b2i(m.Acked), m.Raw, state, m.Attempts)
@@ -683,6 +690,7 @@ func (s *Store) Conversations(me string) ([]Conversation, error) {
 	if me == "" {
 		return nil, nil
 	}
+	me = strings.ToUpper(me) // messages are stored uppercase (see LogMessage)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	rows, err := s.db.Query(`
@@ -786,6 +794,7 @@ func (s *Store) MessagesWithPeer(me, peer string, limit int) ([]Message, error) 
 	if me == "" || peer == "" {
 		return nil, nil
 	}
+	me, peer = strings.ToUpper(me), strings.ToUpper(peer) // rows stored uppercase
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	// Pull newest N, return ascending so the template renders oldest-on-top.

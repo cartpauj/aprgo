@@ -19,6 +19,7 @@ import (
 	"aprgo/internal/igate"
 	"aprgo/internal/state"
 	"aprgo/internal/store"
+	"aprgo/internal/webhook"
 )
 
 func (s *Server) routes() http.Handler {
@@ -74,6 +75,8 @@ func (s *Server) routes() http.Handler {
 	a.HandleFunc("/settings", s.handleSettings)
 	a.HandleFunc("/settings/save", s.handleSettingsSave)
 	a.HandleFunc("/settings/account", s.handleAccount)
+	a.HandleFunc("/settings/webhooks/save", s.handleWebhooksSave)
+	a.HandleFunc("/settings/webhooks/test", s.handleWebhookTest)
 	a.HandleFunc("/setup", s.wizardStart)
 	a.HandleFunc("/setup/", s.wizardRouter)
 	a.HandleFunc("/setup/save/", s.wizardSave)
@@ -585,13 +588,27 @@ func (s *Server) renderPacketHTMLWithConfig(pkt aprs.Packet, tc *aprs.TelemConfi
 	// packet). Putting the icon to the left of the link gives the live
 	// feed the same visual scanability as the map — at a glance you can
 	// tell a car beacon from a weather station from a digi.
+	// Source attribution: for third-party / gated packets the AX.25 source is
+	// the RELAY; the real originator is in MsgOrigSrc. Credit the originator in
+	// the parsed line and add a "via <relay>" chip so the relay isn't lost.
+	// The raw line below stays literal (it IS the wire frame).
+	srcCall := pkt.Frame.Src
+	if pkt.Decoded.MsgOrigSrc != "" {
+		srcCall = pkt.Decoded.MsgOrigSrc
+	}
 	srcLink := fmt.Sprintf(`%s<a class="src" href="/stations/%s">%s</a>`,
 		feedSymbolHTML(pkt.Decoded.Symbol),
-		html.EscapeString(pkt.Frame.Src), html.EscapeString(pkt.Frame.Src))
+		html.EscapeString(srcCall), html.EscapeString(srcCall))
+	if pkt.Decoded.MsgOrigSrc != "" {
+		srcLink += fmt.Sprintf(` <span class="relay-chip" title="relayed (third-party) by %s">via %s</span>`,
+			html.EscapeString(pkt.Frame.Src), html.EscapeString(pkt.Frame.Src))
+	}
 	// Device chip — derived from the AX.25 dest tocall via the embedded
-	// aprs-deviceid registry. Empty when we don't have a match.
+	// aprs-deviceid registry. Empty when we don't have a match. Skipped for
+	// third-party packets: Frame.Dest there is the relay's tocall, not the
+	// originator's, so it would mislabel the hardware.
 	devChip := ""
-	if dev := aprs.LookupDevice(pkt.Frame.Dest); dev.Model != "" || dev.Vendor != "" {
+	if dev := aprs.LookupDevice(pkt.Frame.Dest); pkt.Decoded.MsgOrigSrc == "" && (dev.Model != "" || dev.Vendor != "") {
 		devChip = fmt.Sprintf(` <span class="dev-chip" title="%s">%s</span>`,
 			html.EscapeString(dev.Tocall), html.EscapeString(dev.Display()))
 	}
@@ -1043,6 +1060,11 @@ func (s *Server) apiStations(w http.ResponseWriter, r *http.Request) {
 			o.HasPos = true
 		}
 		dec := aprs.Decode(st.LastInfo, st.LastDest)
+		// Third-party/gated last packet: rich fields belong to the inner
+		// originator, not this relay station. Don't attribute them here.
+		if dec.MsgOrigSrc != "" {
+			dec = aprs.Decoded{Speed: -1, Course: -1}
+		}
 		o.SymbolName = dec.SymbolName
 		o.Altitude = dec.Altitude
 		if dec.Speed >= 0 {
@@ -1183,6 +1205,12 @@ func (s *Server) handleStationDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		if st.LastInfo != "" {
 			dec := aprs.Decode(st.LastInfo, st.LastDest)
+			// If the last heard packet was third-party/gated, its decoded rich
+			// fields belong to the inner originator, not this (relay) station —
+			// don't credit them here (mirrors the position-nulling at intake).
+			if dec.MsgOrigSrc != "" {
+				dec = aprs.Decoded{}
+			}
 			if dec.Weather != nil {
 				data["Weather"] = dec.Weather
 			}
@@ -1671,6 +1699,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	data["BeaconViews"] = views
 	data["BeaconLastFired"] = s.beacon.LastFired()
+	data["Webhooks"] = snap.Webhooks
+	data["WebhookTypes"] = webhook.Types
+	data["WebhookStatus"] = s.webhooks.Snapshot()
 	// Flash for the wizard-not-applicable redirect (e.g. /setup/tnc opened
 	// while Mode=IS has no TNC to change). The wizardRouter sends operators
 	// here with ?wizard=na rather than rendering an empty Done page.
@@ -1863,6 +1894,77 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	} else {
 		flash(w, true, "Saved.")
 	}
+}
+
+// handleWebhooksSave commits the Webhooks list from its own HTMX form,
+// independent of the main settings save (mirrors handleAccount). Lives under
+// /settings so it inherits RequireLogin + the HTTPS transport gate; CSRF and
+// the LockSettings lockdown are enforced here.
+func (s *Server) handleWebhooksSave(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		flash(w, false, "POST required")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		flash(w, false, "bad form")
+		return
+	}
+	if !s.requireCSRF(w, r) {
+		return
+	}
+	if !s.requireUnlocked(w, func(l config.Lockdown) bool { return l.LockSettings }, "settings") {
+		return
+	}
+	whs, verrs := parseWebhooksForm(r)
+	if len(verrs) > 0 {
+		flash(w, false, strings.Join(verrs, "; "))
+		return
+	}
+	if err := s.state.Update(func(st *state.State) error {
+		st.Webhooks = whs
+		return nil
+	}); err != nil {
+		flash(w, false, err.Error())
+		return
+	}
+	flash(w, true, "Saved.")
+}
+
+// handleWebhookTest delivers one synthetic packet to a saved webhook so the
+// operator can confirm wiring (URL, header, TLS) before relying on real
+// traffic. Operates on the saved config by index — the operator saves first,
+// then tests — so the test exercises exactly what's persisted.
+func (s *Server) handleWebhookTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		flash(w, false, "POST required")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		flash(w, false, "bad form")
+		return
+	}
+	if !s.requireCSRF(w, r) {
+		return
+	}
+	if !s.requireUnlocked(w, func(l config.Lockdown) bool { return l.LockSettings }, "settings") {
+		return
+	}
+	idx, err := strconv.Atoi(r.FormValue("idx"))
+	snap := s.state.Snapshot()
+	if err != nil || idx < 0 || idx >= len(snap.Webhooks) {
+		flash(w, false, "Save the webhook first, then test it.")
+		return
+	}
+	code, derr := s.webhooks.SendTest(snap.Webhooks[idx])
+	if derr != nil {
+		flash(w, false, "Test failed: "+derr.Error())
+		return
+	}
+	if code >= 200 && code < 300 {
+		flash(w, true, fmt.Sprintf("Test delivered — receiver returned HTTP %d.", code))
+		return
+	}
+	flash(w, false, fmt.Sprintf("Test reached the receiver but it returned HTTP %d.", code))
 }
 
 func splitCSV(s string) []string {
