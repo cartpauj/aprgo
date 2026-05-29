@@ -1,8 +1,8 @@
 # aprgo — Self-Hosted APRS Suite
 
-A self-hosted APRS suite in a single Go binary. iGate, digipeater, operator console, map, messaging, bulletins, and admin web UI. One process, one config directory, no sidecars.
+A self-hosted APRS suite in a single Go binary. iGate, digipeater, operator console, map, messaging, bulletins, outbound webhooks, and admin web UI. One process, one config directory, no sidecars.
 
-The binary owns the TNC (serial, Bluetooth, or TCP-KISS), talks to APRS-IS, runs gating and digipeat logic, fires your beacons, stores history in SQLite, and serves the whole console over HTTPS. Runs unattended on a Raspberry Pi, a Wyse thin client, or any other Linux box.
+The binary owns the TNC (serial, Bluetooth, or TCP-KISS), talks to APRS-IS, runs gating and digipeat logic, fires your beacons, stores history in SQLite, can push received packets to external services via webhooks (Home Assistant, Node-RED, Zapier, ntfy, …), and serves the whole console over HTTPS. Runs unattended on a Raspberry Pi, a Wyse thin client, or any other Linux box.
 
 **Status:** Alpha. Running stably on Debian 12 with a Mobilinkd TNC3.
 
@@ -116,6 +116,12 @@ The rest of this README is for contributors.
         │   /api/trails — NOT SSE)                 │
         │ web/  (embed.FS templates + static)      │
         └──────────────────────────────────────────┘
+
+        ┌──────────────────────────────────────────┐
+        │ internal/webhook  (subscribes bus.Packets,│
+        │   filters per endpoint, POSTs JSON out to │
+        │   operator URLs — fire-and-forget+retry)  │
+        └──────────────────────────────────────────┘
 ```
 
 ## Package map
@@ -129,13 +135,14 @@ The rest of this README is for contributors.
 | `internal/state` | Persistent JSON config plus live-reload subscribers. Atomic writes with directory fsync | — | partial |
 | `internal/config` | Credentials and lockdown flags (`aprgo.conf`). Bcrypt password, HMAC session key, ratcheted UI lockdown switches | — | — |
 | `internal/tlscert` | Load-or-generate self-signed ECDSA P-256 cert under `/var/lib/aprgo/tls/` | — | — |
-| `internal/store` | SQLite store (stations, packets, messages). Pure-Go `modernc.org/sqlite`. Pragmas tuned for SD-card deploys | — | — |
+| `internal/store` | SQLite store (stations, packets, messages). Pure-Go `modernc.org/sqlite`. Pragmas tuned for SD-card deploys. Callsigns normalized uppercase on write | — | 2 |
 | `internal/auth` | Cookie session (HMAC) plus bcrypt password and per-IP login rate limit | — | — |
 | `internal/igate` | APRS-IS client: connect, login, filter, logresp parsing, auto-reconnect | — | — |
 | `internal/rf` | KISS reader/writer for serial / Bluetooth / TCP behind one `io.ReadWriteCloser`. Includes `btbind` rfcomm supervisor | — | — |
 | `internal/tnc` | BlueZ subprocess wrappers: scan, pair, SDP, rfcomm | — | — |
 | `internal/beacon` | Per-beacon periodic scheduler with jitter | — | — |
-| `internal/server` | HTTP routes, wizard, polling feed, rate limiters, CSRF, transport gate (HTTP→HTTPS), lockdown enforcement | — | — |
+| `internal/server` | HTTP routes, wizard, tabbed Settings, polling feed, rate limiters, CSRF, transport gate (HTTP→HTTPS), lockdown enforcement | — | 6 |
+| `internal/webhook` | Outbound webhook dispatcher: subscribes to `bus.Packets`, filters per endpoint, POSTs JSON with retry. Match/payload logic is pure + unit-tested; delivery does HTTP | — | 11 |
 | `cmd/aprgo` | Binary entry plus `main` (handles `--set-password`, `--regen-tls`, `--version`) | — | — |
 | `cmd/trailcheck` | Auxiliary dev tool | — | — |
 
@@ -190,6 +197,7 @@ The install script creates `/var/lib/aprgo/` (mode 0700), copies the binary to `
 | New gating / digipeat rule | `internal/gate/gate.go` (function plus state flag if user-tunable). Pair with unit tests in `gate_test.go`. |
 | New HTTP endpoint | `internal/server/routes.go` (HandleFunc plus handler). Templates in `web/templates/`. Add to the transport gate's `isCriticalPath()` allowlist if it mutates state. |
 | New persistent setting | `internal/state/state.go` (struct field), Settings UI in `web/templates/settings.html`, save case in `internal/server/routes.go handleSettingsSave`. |
+| New webhook filter or payload field | `internal/webhook/match.go` (`Match` + `payload`/`buildBody`), `internal/state/state.go` (`Webhook` struct), `internal/server/sanitize.go` (`parseWebhooksForm`), and the row UI in `web/templates/settings.html` + `web/static/js/settings.js` (keep the Go-rendered row and the JS `rowTemplate` in sync). |
 | New TNC transport | `internal/state/state.go` (TNCKind enum), `internal/rf/rf.go` (open/dial logic), `web/templates/setup.html` (wizard fieldset). |
 | New beacon-style packet | `internal/beacon/beacon.go` (build function), state schema, Settings UI. |
 | New lockdown flag | `internal/config/config.go` (Lockdown struct plus `Effective()`), 403 checks in handlers via `s.requireUnlocked`, UI surfaces in `web/templates/settings.html`. |
@@ -201,8 +209,11 @@ Coverage is heaviest where it matters most:
 - `internal/gate/gate_test.go` — 21 tests covering WIDE-N parsing, N-capping, decrement, MARK mode (preemptive), path length, viscous flag, skip-self.
 - `internal/aprs/parsers_test.go` — 15 tests covering weather, PHG, RNG, tocall lookup (exact, wildcard, SSID strip), path parsing (used hops, q-construct).
 - `internal/state/` — config validation tests.
+- `internal/webhook/` — filter matching (source / type / callsign / to-callsign / message-text), third-party originator attribution (`MsgOrigSrc`, not the relay), payload shape, and HTTP delivery (success, retry-then-drop).
+- `internal/server/` — settings-page render (catches template breakage), webhook save round-trip, and the passcode helper.
+- `internal/store/` — callsign case-folding so a conversation isn't split by case.
 
-HTTP routes, RF goroutines, and the IS client are exercised by integration testing on a real Pi or Wyse target rather than unit tests. New code touching `gate/`, `aprs/`, or `ax25/` should always come with tests. Those are the places operators can't see things go wrong.
+RF goroutines and the IS client are exercised by integration testing on a real Pi or Wyse target rather than unit tests. New code touching `gate/`, `aprs/`, `ax25/`, or `webhook/` should always come with tests — those are the places operators can't see things go wrong.
 
 ## Deployment loop (dev to real target)
 
