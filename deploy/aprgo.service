@@ -8,8 +8,14 @@ StartLimitBurst=10
 
 [Service]
 Type=simple
-# aprgo spawns `rfcomm connect` and bluetoothctl to maintain BT links; both
-# require root. The hardening directives below mitigate elevated privilege.
+# aprgo runs as root for two reasons:
+#   1. It spawns `rfcomm connect` + bluetoothctl to maintain Bluetooth TNC
+#      links, which require root.
+#   2. It opens serial devices directly — the KISS TNC (/dev/rfcomm*,
+#      /dev/ttyUSB*, /dev/ttyACM*, /dev/ttyAMA*, /dev/ttyS*) and, when GPS is
+#      the position source, a local NMEA receiver (e.g. /dev/ttyACM0). Running
+#      as root means these open regardless of the device's dialout group.
+# The hardening directives below mitigate the elevated privilege.
 User=root
 Group=root
 ExecStart=/usr/bin/aprgo \
@@ -24,8 +30,20 @@ RestartSec=3
 LimitNOFILE=4096
 
 # Hardening
+#
+# DELIBERATELY ABSENT — do not add these without re-testing serial I/O:
+#   * PrivateDevices=yes   would mount a minimal private /dev that hides
+#                          /dev/tty* and /dev/rfcomm*, breaking the serial TNC
+#                          and local NMEA GPS.
+#   * DevicePolicy=closed  (and any DeviceAllow= list) would restrict device
+#                          access to an allow-list; the operator can bind a TNC
+#                          or GPS on any of several tty/rfcomm classes, so we
+#                          leave device access at the permissive default.
+# AF_INET/AF_INET6 below are required for both APRS-IS and gpsd (TCP :2947).
 NoNewPrivileges=true
 ProtectSystem=strict
+# /dev, /proc, /sys are untouched by ProtectSystem=strict, so serial GPS/TNC
+# reads keep working; only the filesystem tree is made read-only.
 ReadWritePaths=/var/lib/aprgo
 ProtectHome=true
 PrivateTmp=true

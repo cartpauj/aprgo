@@ -27,6 +27,16 @@
       <div class="stats-sub">{{comma .PktsIS.Lifetime}} IS packets parsed (all time)</div>
     </div>
     {{end}}
+    {{if .GPSPosition}}
+    <div class="stats-card">
+      <div class="eyebrow">GPS</div>
+      <div class="stats-big">{{if and .GPS.Connected .GPS.Locked}}<span class="status-ok">● {{if eq .GPS.Fix.Mode 2}}2D{{else}}3D{{end}} fix</span>
+        {{else if .GPS.Connected}}<span class="status-warn">● no fix</span>
+        {{else if .GPS.LastError}}<span class="status-err">○ error</span>
+        {{else}}<span class="status-warn">● connecting</span>{{end}}</div>
+      <div class="stats-sub">{{if and .GPS.Connected .GPS.Locked}}{{.GPS.Fix.Sats}} sats · {{printf "%.5f, %.5f" .GPS.Fix.Lat .GPS.Fix.Lon}}{{else}}{{.GPS.Iface}}{{end}}</div>
+    </div>
+    {{end}}
     <div class="stats-card">
       <div class="eyebrow">Our TX</div>
       <div class="stats-big">{{comma .PktsTX.Lifetime}}</div>

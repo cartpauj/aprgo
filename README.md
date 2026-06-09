@@ -2,9 +2,11 @@
 
 A self-hosted APRS suite in a single Go binary. iGate, digipeater, operator console, map, messaging, bulletins, outbound webhooks, and admin web UI. One process, one config directory, no sidecars.
 
-The binary owns the TNC (serial, Bluetooth, or TCP-KISS), talks to APRS-IS, runs gating and digipeat logic, fires your beacons, stores history in SQLite, can push received packets to external services via webhooks (Home Assistant, Node-RED, Zapier, ntfy, …), and serves the whole console over HTTPS. Runs unattended on a Raspberry Pi, a Wyse thin client, or any other Linux box.
+The binary owns the TNC (serial, Bluetooth, or TCP-KISS), talks to APRS-IS, runs gating and digipeat logic, fires your beacons (from a fixed location or a live GPS receiver), stores history in SQLite, can push received packets to external services via webhooks (Home Assistant, Node-RED, Zapier, ntfy, …), and serves the whole console over HTTPS. Runs unattended on a Raspberry Pi, a Wyse thin client, or any other Linux box.
 
 **Status:** Alpha. Running stably on Debian 12 with a Mobilinkd TNC3.
+
+> **Built with AI, directed by a human.** aprgo is AI-assisted — "vibe-coded," yes — but not unattended. I scope, review, and test every feature on real hardware across many late nights and weekends. AI is what makes something this complete possible in my spare time; the decisions, and the bugs, are mine. Found one? Open an issue.
 
 > **New to APRS?** APRS is the ham radio digital data network: position reports, short messages, weather telemetry, emergency comms over VHF. An *iGate* is a station that bridges radio traffic to the internet (APRS-IS) and back. A *digipeater* repeats packets so they reach further than a single hop. aprgo can be either, both, or neither — it also runs as a pure APRS-IS client with no radio at all.
 
@@ -66,6 +68,19 @@ aprgo speaks KISS over whatever transport your TNC offers. What you do depends o
 - **Older or non-KISS TNCs**, networked TNC hubs, or anything talking AGW/PE/TNC-2 command mode: bridge them through [`tnc-server`](https://github.com/chrissnell/tnc-server), `kissnetd`, or similar.
 
 If your TNC is Bluetooth or USB KISS, just run aprgo. Otherwise set up Direwolf or tnc-server first, then point aprgo at it via the wizard's TCP option.
+
+### Position: fixed or GPS
+
+Every station has a **position source**, chosen in **Settings → Position & mode** (works in any operating mode):
+
+- **Fixed** — beacons transmit the latitude/longitude you set in the location wizard. The default; right for a home iGate or digipeater.
+- **GPS** — aprgo reads a live position from a receiver and uses it for beacons. Two source types are supported:
+  - **Local NMEA serial/USB** — a GPS dongle or HAT on `/dev/ttyACM*`, `/dev/ttyUSB*`, or the Pi UART. Click **Detect GPS receivers…** and aprgo probes the serial ports, validates NMEA checksums, and lists only ports actually emitting GPS data (your configured TNC port is skipped). Talker-ID agnostic, so multi-constellation receivers that emit `$GNRMC`/`$GNGGA` work alongside GPS-only `$GP…` units.
+  - **[gpsd](https://gpsd.io/)** — for a shared, networked, or otherwise-supported receiver. aprgo connects to gpsd's TCP socket (default `127.0.0.1:2947`, or a custom host). Auto-detected when running locally; `gpsd` is a package *suggests* (not required).
+
+The position is sampled at the moment each beacon transmits — it doesn't change how often you beacon, and position ambiguity / symbol / message-capable flags all still apply. A **fallback** setting controls what happens when there's no live fix at transmit time: reuse the last-known fix (up to a max age) then fall back to the fixed location, use the fixed location, or skip the beacon entirely (best for mobile stations that shouldn't report a stale position). Live fix state (lock, satellites, HDOP, coordinates) shows in Settings and as a status card on the Dashboard and Stats pages, next to the TNC and APRS-IS indicators.
+
+> GPS hardware needs a clear view of the sky. A USB dongle sitting next to the Pi indoors will see few satellites at low signal and may never lock — put the antenna on a windowsill or outdoors, facing up.
 
 User documentation (operating modes, hardware deep-dive, security hardening, troubleshooting, day-2 operations) lives in the project wiki.
 
@@ -140,7 +155,8 @@ The rest of this README is for contributors.
 | `internal/igate` | APRS-IS client: connect, login, filter, logresp parsing, auto-reconnect | — | — |
 | `internal/rf` | KISS reader/writer for serial / Bluetooth / TCP behind one `io.ReadWriteCloser`. Includes `btbind` rfcomm supervisor | — | — |
 | `internal/tnc` | BlueZ subprocess wrappers: scan, pair, SDP, rfcomm | — | — |
-| `internal/beacon` | Per-beacon periodic scheduler with jitter | — | — |
+| `internal/gps` | Live position source: local NMEA serial reader + gpsd client, device detection/verification. NMEA decode + checksum are pure; the supervisor/transports do I/O | — | 6 |
+| `internal/beacon` | Per-beacon periodic scheduler with jitter; samples the GPS position provider at TX time | — | — |
 | `internal/server` | HTTP routes, wizard, tabbed Settings, polling feed, rate limiters, CSRF, transport gate (HTTP→HTTPS), lockdown enforcement | — | 6 |
 | `internal/webhook` | Outbound webhook dispatcher: subscribes to `bus.Packets`, filters per endpoint, POSTs JSON with retry. Match/payload logic is pure + unit-tested; delivery does HTTP | — | 11 |
 | `cmd/aprgo` | Binary entry plus `main` (handles `--set-password`, `--regen-tls`, `--version`) | — | — |
@@ -199,6 +215,7 @@ The install script creates `/var/lib/aprgo/` (mode 0700), copies the binary to `
 | New persistent setting | `internal/state/state.go` (struct field), Settings UI in `web/templates/settings.html`, save case in `internal/server/routes.go handleSettingsSave`. |
 | New webhook filter or payload field | `internal/webhook/match.go` (`Match` + `payload`/`buildBody`), `internal/state/state.go` (`Webhook` struct), `internal/server/sanitize.go` (`parseWebhooksForm`), and the row UI in `web/templates/settings.html` + `web/static/js/settings.js` (keep the Go-rendered row and the JS `rowTemplate` in sync). |
 | New TNC transport | `internal/state/state.go` (TNCKind enum), `internal/rf/rf.go` (open/dial logic), `web/templates/setup.html` (wizard fieldset). |
+| New GPS source/transport | `internal/gps/` (`GPSKind` session in `gps.go`, NMEA decode in `nmea.go`, detection in `detect.go`), `internal/state/state.go` (`GPSKind`), Settings UI in `web/templates/settings.html` + scan handler in `internal/server/routes.go`. |
 | New beacon-style packet | `internal/beacon/beacon.go` (build function), state schema, Settings UI. |
 | New lockdown flag | `internal/config/config.go` (Lockdown struct plus `Effective()`), 403 checks in handlers via `s.requireUnlocked`, UI surfaces in `web/templates/settings.html`. |
 
@@ -208,6 +225,7 @@ Coverage is heaviest where it matters most:
 
 - `internal/gate/gate_test.go` — 21 tests covering WIDE-N parsing, N-capping, decrement, MARK mode (preemptive), path length, viscous flag, skip-self.
 - `internal/aprs/parsers_test.go` — 15 tests covering weather, PHG, RNG, tocall lookup (exact, wildcard, SSID strip), path parsing (used hops, q-construct).
+- `internal/gps/nmea_test.go` — 6 tests: NMEA checksum validation, talker-ID-agnostic sentence typing, ddmm→decimal coordinate decode, and fix-vs-no-fix semantics (RMC status A/V, GGA quality 0) on real captured sentences.
 - `internal/state/` — config validation tests.
 - `internal/webhook/` — filter matching (source / type / callsign / to-callsign / message-text), third-party originator attribution (`MsgOrigSrc`, not the relay), payload shape, and HTTP delivery (success, retry-then-drop).
 - `internal/server/` — settings-page render (catches template breakage), webhook save round-trip, and the passcode helper.
@@ -259,6 +277,8 @@ internal/
   igate/           APRS-IS client (reconnect, filter, logresp parsing)
   rf/              KISS reader/writer for serial / Bluetooth / TCP, plus btbind supervisor
   tnc/             BlueZ subprocess wrappers (scan / pair / SDP / rfcomm)
+  gps/             live position: NMEA serial reader + gpsd client, device detection
+
   gate/            RF↔IS gating + digipeat decision engine (pure functions)
   beacon/          periodic beacon scheduler
   server/          HTTP routes, polling feed, wizard, rate limiters, CSRF, transport gate, lockdown enforcement

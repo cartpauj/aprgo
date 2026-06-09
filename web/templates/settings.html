@@ -50,13 +50,60 @@
       </label>
     {{template "settingsSectionClose" .}}
 
-    {{template "settingsSectionOpen" (dict "Title" "Position & mode" "Sub" "Where your station is and how it behaves on the air.")}}
+    {{template "settingsSectionOpen" (dict "Title" "Position & mode" "Sub" "Where your station is and how it behaves on the air." "BodyClass" "stack-3")}}
       <div class="inline-fields">
-        <div class="dim mono-num">{{if or .St.Lat .St.Lon}}{{printf "%.5f, %.5f" .St.Lat .St.Lon}}{{else}}not set{{end}}</div>
+        <div class="dim mono-num">Fixed location: {{if or .St.Lat .St.Lon}}{{printf "%.5f, %.5f" .St.Lat .St.Lon}}{{else}}not set{{end}}</div>
         <a href="/setup/location" class="btn ghost">Change location…</a>
         <span class="dim">·</span>
         <div class="dim">Mode: <span class="mono">{{if .St.Mode}}{{.St.Mode}}{{else}}unset{{end}}</span></div>
         <a href="/setup/mode" class="btn ghost">Switch mode…</a>
+      </div>
+      <div class="gps-status-line dim small" hx-get="/settings/gps/status" hx-trigger="load, every 10s" hx-target="this" hx-swap="innerHTML"></div>
+
+      {{$gps := eq (printf "%s" .St.PositionSource) "gps"}}
+      <fieldset class="stack-2 gps-source-fieldset">
+        <legend class="label-head">Position source</legend>
+        <label class="cb"><input type="radio" name="position_source" value="fixed" class="gps-source-radio" {{if not $gps}}checked{{end}}> Fixed — transmit the location above</label>
+        <label class="cb"><input type="radio" name="position_source" value="gps" class="gps-source-radio" {{if $gps}}checked{{end}}> GPS — sample a live receiver right before each beacon<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Position is read from a local NMEA receiver or gpsd at the moment a beacon transmits — it doesn't change how often you beacon. Position ambiguity, symbol, and message-capable flags still apply. If there's no live fix, the fallback below decides what happens.</span></span></label>
+      </fieldset>
+
+      <div id="gps-config" class="stack-3"{{if not $gps}} style="display:none"{{end}}>
+        <div class="stack-2">
+          <span class="label-head">GPS receiver<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">Only ports confirmed to be emitting valid GPS data are listed; the detected receiver is auto-selected — just <strong>Save</strong>. The configured TNC device is skipped. A receiver may need a minute after power-on before it's detectable.</span></span></span>
+          <div id="gps-picker" class="stack-2">
+            {{if eq (printf "%s" .St.GPSKind) "gpsd"}}
+              <label class="cb"><input type="radio" name="gps_pick" value="gpsd|{{.St.GPSDAddr}}" checked> <span class="eyebrow">gpsd</span> <code>{{if .St.GPSDAddr}}{{.St.GPSDAddr}}{{else}}127.0.0.1:2947{{end}}</code> <span class="dim">— current</span></label>
+            {{else if .St.GPSDevice}}
+              <label class="cb"><input type="radio" name="gps_pick" value="serial|{{.St.GPSDevice}}|{{.St.GPSBaud}}" checked> <span class="eyebrow">Serial</span> <code>{{.St.GPSDevice}}</code>{{if .St.GPSBaud}} <span class="dim">@ {{.St.GPSBaud}} baud</span>{{end}} <span class="dim">— current</span></label>
+            {{end}}
+            <label class="cb"><input type="radio" name="gps_pick" value="gpsd-custom"> <span class="eyebrow">gpsd</span> <span class="dim">custom host</span> <input type="text" name="gpsd_addr" value="{{.St.GPSDAddr}}" placeholder="host:port (default 127.0.0.1:2947)" style="width:22rem;max-width:100%"></label>
+          </div>
+          <div id="gps-scan-results" class="stack-2"></div>
+          <div class="inline-fields">
+            <button type="button" class="btn ghost busy-btn" hx-post="/settings/gps/scan" hx-target="#gps-scan-results" hx-swap="innerHTML" hx-headers='{"X-CSRF-Token": "{{.CSRFToken}}"}' hx-indicator="#gps-scan-spin">
+              <span class="busy-label-idle">Detect GPS receivers…</span>
+              <span class="busy-label-active">Scanning…</span>
+            </button>
+            <span id="gps-scan-spin" class="htmx-indicator dim hint-tag">probing serial ports (a few seconds)…</span>
+          </div>
+        </div>
+
+        <div class="stack-2">
+          <span class="label-head">When there's no live fix<span class="info-tip" tabindex="0" aria-label="More info">i<span class="info-tip-pop">What a position beacon does when the receiver isn't locked at transmit time. <strong>Last known</strong> reuses the most recent fix (up to the max age), then falls back to your fixed location. <strong>Fixed</strong> ignores stale GPS and uses your fixed location. <strong>Skip</strong> sends nothing until a fix returns — best for mobile stations that shouldn't report a wrong position.</span></span></span>
+          <div class="inline-fields">
+            <label class="num-row"><span class="label-head">Fallback</span>
+              {{$fb := printf "%s" .St.GPSFallback}}
+              <select name="gps_fallback" style="width:auto">
+                <option value="last" {{if or (eq $fb "") (eq $fb "last")}}selected{{end}}>Use last known fix, else fixed location</option>
+                <option value="fixed" {{if eq $fb "fixed"}}selected{{end}}>Use the fixed location</option>
+                <option value="skip" {{if eq $fb "skip"}}selected{{end}}>Skip the beacon (no transmit)</option>
+              </select>
+            </label>
+            <label class="num-row"><span class="label-head">Max age (min)</span>
+              <input type="number" name="gps_max_fix_age_min" min="1" max="1440" value="{{if .St.GPSMaxFixAgeS}}{{div .St.GPSMaxFixAgeS 60}}{{else}}30{{end}}">
+            </label>
+          </div>
+        </div>
       </div>
     {{template "settingsSectionClose" .}}
 

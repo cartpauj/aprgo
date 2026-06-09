@@ -44,6 +44,33 @@ const (
 	TNCTCP    TNCKind = "tcp"    // host:port (Direwolf, tnc-server, WiFi TNC)
 )
 
+// PositionSource selects where a beacon's lat/lon comes from. Empty == fixed
+// (the operator-entered Lat/Lon) so existing state.json files keep working.
+type PositionSource string
+
+const (
+	PosFixed PositionSource = ""    // use the static Lat/Lon
+	PosGPS   PositionSource = "gps" // sample a live GPS fix at beacon time
+)
+
+// GPSKind discriminates the GPS input transport, mirroring TNCKind.
+type GPSKind string
+
+const (
+	GPSSerial GPSKind = "nmea-serial" // local NMEA over a serial/USB tty
+	GPSD      GPSKind = "gpsd"        // the gpsd daemon over TCP
+)
+
+// GPSFallback selects what a GPS-sourced beacon does when there is no live
+// fix at transmit time. Empty == "last" so it has a sensible default.
+type GPSFallback string
+
+const (
+	GPSFallbackLast  GPSFallback = ""      // use last-known fix (within max age), else fixed Lat/Lon
+	GPSFallbackFixed GPSFallback = "fixed" // ignore stale GPS, use fixed Lat/Lon
+	GPSFallbackSkip  GPSFallback = "skip"  // don't transmit a position beacon without a live fix
+)
+
 // Beacon is one independently-scheduled APRS beacon. Position is shared from
 // the station-wide Lat/Lon (so changing your station's location updates all
 // beacons). Symbol and Comment are the operator-facing pieces; the wire-format
@@ -143,6 +170,18 @@ type State struct {
 	// Position (decimal degrees; 0 means unset)
 	Lat float64 `json:"lat"`
 	Lon float64 `json:"lon"`
+
+	// Position source. Fixed (default) uses the Lat/Lon above. GPS samples a
+	// live fix from a local NMEA receiver or gpsd at the moment a beacon is
+	// transmitted (see internal/gps + internal/beacon). Independent of Mode —
+	// any station type can run off GPS.
+	PositionSource PositionSource `json:"position_source,omitempty"`
+	GPSKind        GPSKind        `json:"gps_kind,omitempty"`
+	GPSDevice      string         `json:"gps_device,omitempty"`        // tty path for nmea-serial, e.g. /dev/ttyACM0
+	GPSBaud        int            `json:"gps_baud,omitempty"`          // 0 = 9600 default (ignored for USB CDC-ACM)
+	GPSDAddr       string         `json:"gpsd_addr,omitempty"`         // gpsd host:port; 0-value defaults to 127.0.0.1:2947
+	GPSFallback    GPSFallback    `json:"gps_fallback,omitempty"`      // behavior when no live fix at TX time
+	GPSMaxFixAgeS  int            `json:"gps_max_fix_age_s,omitempty"` // 0 = DefaultGPSMaxFixAgeS; how stale a last-known fix may be
 
 	// APRS-IS
 	ISServer string `json:"is_server"` // "noam.aprs2.net:14580"
@@ -293,6 +332,11 @@ const (
 	DefaultTNCPersist    = 63  // ≈25% probability, the KISS spec recommendation
 	DefaultTNCSlotTimeMs = 100 // 100ms between persist samples
 	DefaultTNCTXTailMs   = 0   // deprecated; keep at 0 unless TNC vendor docs say otherwise
+
+	// GPS defaults.
+	DefaultGPSBaud       = 9600             // most common NMEA UART rate; USB CDC-ACM ignores it
+	DefaultGPSDAddr      = "127.0.0.1:2947" // gpsd's default listen socket
+	DefaultGPSMaxFixAgeS = 1800             // 30 min: how long a last-known fix may be reused after lock loss
 )
 
 // Store wraps the persisted State with an RWMutex and a subscriber list.

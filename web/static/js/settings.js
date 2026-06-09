@@ -4,6 +4,14 @@
   var form = document.querySelector('form[hx-post="/settings/save"]');
   if (form && window.htmx) {
     form.addEventListener("htmx:afterRequest", function (e) {
+      // Only reload for the form's OWN save POST. htmx:afterRequest bubbles, so
+      // child requests inside this form (the GPS status poll every 3s, the
+      // "Detect GPS" scan) reach this listener too — reloading on those would
+      // wipe the scan results and abort the in-flight scan. Match on the
+      // request PATH, which is unambiguous across htmx versions.
+      var cfg = e.detail && e.detail.requestConfig;
+      var path = cfg && (cfg.path || cfg.url);
+      if (path !== "/settings/save") return;
       if (e.detail.successful) setTimeout(function () { location.reload(); }, 700);
     });
   }
@@ -16,6 +24,7 @@
   var acctForm = document.querySelector('form[hx-post="/settings/account"]');
   if (acctForm && window.htmx) {
     acctForm.addEventListener("htmx:afterRequest", function (e) {
+      if (e.target !== acctForm) return; // ignore bubbled child requests
       if (e.detail.successful) setTimeout(function () { location.reload(); }, 700);
     });
   }
@@ -566,6 +575,23 @@
       '</div>'
     );
   }
+})();
+
+// ─── GPS position-source toggle ──────────────────────────────────────────
+// Show the GPS config block only when "GPS" is the selected position source.
+(function () {
+  var radios = document.querySelectorAll(".gps-source-radio");
+  var cfg = document.getElementById("gps-config");
+  if (!radios.length || !cfg) return;
+  function sync() {
+    // Toggle inline display rather than the [hidden] attribute: #gps-config
+    // carries .stack-3 (display:flex), which overrides [hidden]'s UA-level
+    // display:none. Inline style wins, so this actually hides it.
+    var on = document.querySelector('.gps-source-radio[value="gps"]:checked');
+    cfg.style.display = on ? "" : "none";
+  }
+  radios.forEach(function (r) { r.addEventListener("change", sync); });
+  sync();
 })();
 
 // ─── Settings tabs ───────────────────────────────────────────────────────

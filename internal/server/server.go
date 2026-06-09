@@ -29,6 +29,7 @@ import (
 	"aprgo/internal/bus"
 	"aprgo/internal/config"
 	"aprgo/internal/gate"
+	"aprgo/internal/gps"
 	"aprgo/internal/igate"
 	"aprgo/internal/rf"
 	"aprgo/internal/state"
@@ -62,6 +63,7 @@ type Server struct {
 	store  *store.Store
 	rf       *rf.RF
 	is       *igate.Client
+	gps      *gps.GPS
 	beacon   *beacon.Beacon
 	webhooks *webhook.Manager
 	tmpl     *template.Template
@@ -239,8 +241,10 @@ func New(opts Options) (*Server, error) {
 		bulletinSends: newBulletinSendTracker(),
 	}
 	s.is = igate.New(st, b)
+	s.gps = gps.New(st)
 	s.beacon = beacon.New(st, s.rf, b)
-	s.beacon.SetIS(s.is) // enables IS-only beacon transmission for ModeIS
+	s.beacon.SetIS(s.is)                      // enables IS-only beacon transmission for ModeIS
+	s.beacon.SetPositionProvider(s.gps)       // beacons sample a live fix when PositionSource==gps
 	s.webhooks = webhook.New(st, b)
 	return s, nil
 }
@@ -315,6 +319,7 @@ func (s *Server) Run(ctx context.Context) error {
 	} else {
 		log.Printf("igate: skipped — Offline mode enabled in state")
 	}
+	spawn("gps", s.gps.Run)
 	spawn("beacon", s.beacon.Run)
 	spawn("parseLoop", s.parseLoop)
 	// Webhook dispatcher subscribes to bus.Packets. Runs unconditionally —
