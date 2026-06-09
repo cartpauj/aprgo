@@ -20,7 +20,7 @@ One-line installer:
 curl -fsSL https://raw.githubusercontent.com/cartpauj/aprgo/main/get.sh | sudo sh
 ```
 
-It detects your distro family and CPU arch, downloads the matching `.deb` or `.rpm` from the latest GitHub release, installs it (pulling in `bluez`, `bluez-tools`, and `direwolf` as recommended dependencies), and prints how to reach the console.
+It detects your distro family and CPU arch, downloads the matching `.deb` or `.rpm` from the latest GitHub release, installs it (pulling in `bluez` and `bluez-tools` as dependencies, with `direwolf` and `gpsd` suggested for soundcard-TNC and GPS setups), and prints how to reach the console.
 
 ### Supported platforms
 
