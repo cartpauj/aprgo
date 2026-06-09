@@ -52,6 +52,10 @@ license: MIT
 suggests:
   - direwolf
   - tnc-server
+  # gpsd is optional: only needed if the operator drives position from GPS via
+  # the gpsd daemon (the "any receiver / shared / networked GPS" path). Direct
+  # local NMEA serial and fixed position need nothing extra.
+  - gpsd
 
 overrides:
   deb:

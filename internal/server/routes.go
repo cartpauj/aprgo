@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -16,6 +17,7 @@ import (
 	"aprgo/internal/aprs"
 	"aprgo/internal/ax25"
 	"aprgo/internal/config"
+	"aprgo/internal/gps"
 	"aprgo/internal/igate"
 	"aprgo/internal/state"
 	"aprgo/internal/store"
@@ -77,6 +79,8 @@ func (s *Server) routes() http.Handler {
 	a.HandleFunc("/settings/account", s.handleAccount)
 	a.HandleFunc("/settings/webhooks/save", s.handleWebhooksSave)
 	a.HandleFunc("/settings/webhooks/test", s.handleWebhookTest)
+	a.HandleFunc("/settings/gps/scan", s.handleGPSScan)
+	a.HandleFunc("/settings/gps/status", s.handleGPSStatus)
 	a.HandleFunc("/setup", s.wizardStart)
 	a.HandleFunc("/setup/", s.wizardRouter)
 	a.HandleFunc("/setup/save/", s.wizardSave)
@@ -484,7 +488,46 @@ func (s *Server) dashboardStatusCards(snap state.State) []statusCard {
 		cards = append(cards, beaconCard)
 		cards = append(cards, heardCard)
 	}
+
+	// GPS health, shown only when GPS is the active position source. Mirrors
+	// the RF / APRS-IS indicators and sits right beside them: inserted after
+	// the RF card (and the APRS-IS card when present) rather than at the end.
+	if snap.PositionSource == state.PosGPS {
+		pos := 1 // after RF
+		if !snap.OfflineMode {
+			pos = 2 // after RF + APRS-IS
+		}
+		if pos > len(cards) {
+			pos = len(cards)
+		}
+		gpsCard := gpsStatusCard(s.gps.Status())
+		cards = append(cards, statusCard{})
+		copy(cards[pos+1:], cards[pos:])
+		cards[pos] = gpsCard
+	}
 	return cards
+}
+
+// gpsStatusCard renders the dashboard GPS indicator from a gps.Status.
+func gpsStatusCard(st gps.Status) statusCard {
+	switch {
+	case st.Connected && st.Locked:
+		dim := "3D"
+		if st.Fix.Mode == 2 {
+			dim = "2D"
+		}
+		sub := fmt.Sprintf("%d sats", st.Fix.Sats)
+		if st.Fix.HDOP > 0 {
+			sub += fmt.Sprintf(" · HDOP %.1f", st.Fix.HDOP)
+		}
+		return statusCard{Label: "GPS", Tone: "ok", Value: "● " + dim + " fix", Sub: sub}
+	case st.Connected:
+		return statusCard{Label: "GPS", Tone: "warn", Value: "● no fix", Sub: "acquiring · " + st.Iface}
+	case st.LastError != "":
+		return statusCard{Label: "GPS", Tone: "err", Value: "● error", Sub: "see Settings"}
+	default:
+		return statusCard{Label: "GPS", Tone: "warn", Value: "● connecting", Sub: st.Iface}
+	}
 }
 
 // handleFeedPoll is the dashboard live-feed AJAX endpoint. Clients send
@@ -1685,6 +1728,10 @@ func (s *Server) handleDiagnosticsLog(w http.ResponseWriter, r *http.Request) {
 
 // handleSettings shows the consolidated settings page.
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	// Never cache the settings HTML — it reflects live state (GPS source,
+	// beacons, flags) and stale renders cause confusing "my change didn't
+	// apply" reports.
+	w.Header().Set("Cache-Control", "no-store")
 	data := s.common("Settings", r)
 	snap := s.state.Snapshot()
 	// Render each beacon with its path pre-joined for the form.
@@ -1710,6 +1757,106 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		data["FlashErr"] = "That wizard doesn't apply to your current operating mode — switch modes first if you need to configure that section."
 	}
 	s.render(w, "settings.html", data)
+}
+
+// handleGPSScan probes local serial ports and gpsd, returning an HTMX fragment
+// of *verified* GPS sources as radio options. Only devices that actually emit
+// valid NMEA are offered (see gps.ScanDevices). The configured TNC device is
+// excluded so we never disturb the radio link.
+func (s *Server) handleGPSScan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	_ = r.ParseForm()
+	if !s.requireCSRF(w, r) {
+		return
+	}
+	// Serialize with the BT scan: both poke at serial hardware.
+	s.scanMu.Lock()
+	defer s.scanMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	snap := s.state.Snapshot()
+	var exclude []string
+	if snap.TNCKind == state.TNCSerial && snap.TNCSerial != "" {
+		exclude = append(exclude, snap.TNCSerial)
+	}
+	devs := gps.ScanDevices(ctx, exclude, 3*time.Second)
+	gpsdUp := gps.GpsdAvailable(ctx, state.DefaultGPSDAddr)
+
+	var b strings.Builder
+	b.WriteString(`<div class="scan-results stack-2">`)
+	if gpsdUp || len(devs) > 0 {
+		b.WriteString(`<span class="label-head">Detected GPS sources</span>`)
+	}
+	// Auto-select the first source found (a serial receiver if any, else gpsd)
+	// so the operator can just hit Save. `picked` tracks whether we've already
+	// emitted a checked radio.
+	picked := false
+	for i, d := range devs {
+		chk := ""
+		if i == 0 {
+			chk, picked = " checked", true
+		}
+		fmt.Fprintf(&b, `<label class="cb"><input type="radio" name="gps_pick" value="serial|%s|%d"%s> <span class="eyebrow">Serial</span> <code>%s</code> <span class="dim">— %s</span></label>`,
+			html.EscapeString(d.Path), d.Baud, chk, html.EscapeString(d.Path), html.EscapeString(d.Label))
+	}
+	if gpsdUp {
+		chk := ""
+		if !picked {
+			chk = " checked"
+		}
+		fmt.Fprintf(&b, `<label class="cb"><input type="radio" name="gps_pick" value="gpsd|%s"%s> <span class="eyebrow">gpsd</span> <code>%s</code> <span class="dim">— shared GPS daemon (supports any receiver)</span></label>`,
+			html.EscapeString(state.DefaultGPSDAddr), chk, html.EscapeString(state.DefaultGPSDAddr))
+	}
+	if !gpsdUp && len(devs) == 0 {
+		b.WriteString(`<div class="dim">No GPS receivers detected. Plug in a USB GPS (or start gpsd) and rescan — a receiver can take a minute after power-on before it emits position data.</div>`)
+	}
+	b.WriteString(`</div>`)
+	_, _ = w.Write([]byte(b.String()))
+}
+
+// handleGPSStatus returns a small live-status fragment for the settings page to
+// poll, so the operator can watch the receiver acquire a lock without reloading.
+func (s *Server) handleGPSStatus(w http.ResponseWriter, r *http.Request) {
+	st := s.gps.Status()
+	w.Header().Set("Cache-Control", "no-store")
+	if !st.Enabled {
+		// Nothing to show in fixed mode — keep the location area clean.
+		return
+	}
+	const (
+		okStyle   = `style="color:var(--ok,#3fb950)"`
+		warnStyle = `style="color:var(--warn,#d29922)"`
+		errStyle  = `style="color:var(--err,#f85149)"`
+	)
+	var b strings.Builder
+	b.WriteString(`GPS location: `)
+	switch {
+	case st.Connected && st.Locked:
+		dim := "3D"
+		if st.Fix.Mode == 2 {
+			dim = "2D"
+		}
+		fmt.Fprintf(&b, `<span %s>● %s fix</span> · %s · %d sats`, okStyle, dim, html.EscapeString(st.Iface), st.Fix.Sats)
+		if st.Fix.HDOP > 0 {
+			fmt.Fprintf(&b, ` · HDOP %.1f`, st.Fix.HDOP)
+		}
+		fmt.Fprintf(&b, ` · <code>%.5f, %.5f</code>`, st.Fix.Lat, st.Fix.Lon)
+	case st.Connected:
+		fmt.Fprintf(&b, `<span %s>● connected, no fix</span> · %s · acquiring`, warnStyle, html.EscapeString(st.Iface))
+		if st.Fix.Sats > 0 {
+			fmt.Fprintf(&b, ` (%d sats visible)`, st.Fix.Sats)
+		}
+	case st.LastError != "":
+		fmt.Fprintf(&b, `<span %s>● error</span> · %s`, errStyle, html.EscapeString(st.LastError))
+	default:
+		fmt.Fprintf(&b, `<span %s>● connecting…</span>`, warnStyle)
+	}
+	_, _ = w.Write([]byte(b.String()))
 }
 
 // handleSettingsSave commits the whole settings form atomically.
@@ -1872,6 +2019,52 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 			st.Timezone = tz
 		} else {
 			st.Timezone = ""
+		}
+		// Position source + GPS. Available in every mode — any station type
+		// can run off GPS. The fixed Lat/Lon (edited via the location wizard)
+		// is preserved and used as the GPS fallback.
+		if r.FormValue("position_source") == "gps" {
+			st.PositionSource = state.PosGPS
+			switch pick := r.FormValue("gps_pick"); {
+			case pick == "gpsd-custom":
+				st.GPSKind = state.GPSD
+				addr := sanitizeAPRSField(r.FormValue("gpsd_addr"))
+				if addr == "" {
+					addr = state.DefaultGPSDAddr
+				}
+				st.GPSDAddr, st.GPSDevice, st.GPSBaud = addr, "", 0
+			case strings.HasPrefix(pick, "gpsd|"):
+				st.GPSKind = state.GPSD
+				st.GPSDAddr, st.GPSDevice, st.GPSBaud = sanitizeAPRSField(strings.TrimPrefix(pick, "gpsd|")), "", 0
+			case strings.HasPrefix(pick, "serial|"):
+				parts := strings.SplitN(pick, "|", 3)
+				if !strings.HasPrefix(parts[1], "/dev/") {
+					return fmt.Errorf("GPS device must be a /dev path")
+				}
+				st.GPSKind, st.GPSDevice, st.GPSBaud, st.GPSDAddr = state.GPSSerial, parts[1], 0, ""
+				if len(parts) > 2 {
+					if bd, err := strconv.Atoi(parts[2]); err == nil {
+						st.GPSBaud = bd
+					}
+				}
+			default:
+				// No new selection submitted: keep the existing GPS source as-is.
+			}
+			switch r.FormValue("gps_fallback") {
+			case "fixed":
+				st.GPSFallback = state.GPSFallbackFixed
+			case "skip":
+				st.GPSFallback = state.GPSFallbackSkip
+			default:
+				st.GPSFallback = state.GPSFallbackLast
+			}
+			if v := r.FormValue("gps_max_fix_age_min"); v != "" {
+				if m, err := strconv.Atoi(v); err == nil && m >= 1 && m <= 1440 {
+					st.GPSMaxFixAgeS = m * 60
+				}
+			}
+		} else {
+			st.PositionSource = state.PosFixed
 		}
 		return nil
 	})
@@ -2139,6 +2332,8 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	data["Storage"] = storage
 	data["RFConnected"] = s.rf.Connected()
 	data["ISConnected"] = s.is.Connected()
+	data["GPSPosition"] = snap.PositionSource == state.PosGPS
+	data["GPS"] = s.gps.Status()
 	data["BlockedCount"] = len(s.srcLimiter.BlockedSources())
 	data["RetentionDays"] = snap.RetentionDays
 	s.render(w, "stats.html", data)

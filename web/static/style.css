@@ -708,6 +708,24 @@ label.num-row > input[type="number"] {
   flex: 0 0 110px;
 }
 
+/* GPS position-source selector: replace the browser's heavy default fieldset
+   border with the soft, rounded card border used elsewhere in settings. */
+.gps-source-fieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  padding: var(--gap-3) var(--gap-4);
+}
+.gps-source-fieldset > legend {
+  padding: 0 var(--gap-2);
+}
+/* GPS receiver/fallback config nests under the "GPS" position-source choice —
+   a left rule + indent makes that parent/child relationship visually clear. */
+#gps-config {
+  border-left: 2px solid var(--border);
+  padding-left: var(--gap-4);
+  margin-left: 4px;
+}
+
 /* ─── Page heads ──────────────────────────────────────────────────────── */
 .page-head {
   display: flex;
