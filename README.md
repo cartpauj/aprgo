@@ -4,7 +4,7 @@ A self-hosted APRS suite in a single Go binary. iGate, digipeater, operator cons
 
 The binary owns the TNC (serial, Bluetooth, or TCP-KISS), talks to APRS-IS, runs gating and digipeat logic, fires your beacons (from a fixed location or a live GPS receiver), stores history in SQLite, can push received packets to external services via webhooks (Home Assistant, Node-RED, Zapier, ntfy, …), and serves the whole console over HTTPS. Runs unattended on a Raspberry Pi, a Wyse thin client, or any other Linux box.
 
-**Status:** Early beta. Running stably on Debian 12 with a Mobilinkd TNC3.
+**Status:** Early beta. Running stably on Debian 13 and the latest Raspberry Pi OS with a Mobilinkd TNC3.
 
 > **Built with AI, directed by a human.** aprgo is AI-assisted — "vibe-coded," yes — but not unattended. I scope, review, and test every feature on real hardware across many late nights and weekends. AI is what makes something this complete possible in my spare time; the decisions, and the bugs, are mine. Found one? Open an issue.
 
